@@ -1,10 +1,10 @@
-"""SQLite history: which news items have been seen and shown, their summaries, and when digests ran."""
+"""SQLite history: news items seen and shown, their summaries, digest runs, lessons and recall questions."""
 
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
-from dailygrad.models import Candidate, Story
+from dailygrad.models import Candidate, Lesson, Story
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -37,6 +37,25 @@ CREATE TABLE IF NOT EXISTS summaries (
     why_it_matters TEXT NOT NULL,
     evidence TEXT NOT NULL,  -- 'article', 'abstract' or 'excerpt'
     model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- One row per micro-lesson shown. Curriculum progress is derived from this table alone.
+CREATE TABLE IF NOT EXISTS lessons (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    topic_id TEXT NOT NULL,  -- a curriculum topic id
+    lesson TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- One row per recall question shown.
+CREATE TABLE IF NOT EXISTS recalls (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    topic_id TEXT NOT NULL,
+    question TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 """
@@ -93,3 +112,37 @@ def record_summaries(conn: sqlite3.Connection, run_id: int, stories: list[Story]
             if s.what_happened
         ],
     )
+
+
+def lesson_history(conn: sqlite3.Connection) -> list[str]:
+    """Topic IDs of every lesson given, oldest first."""
+    return [topic_id for (topic_id,) in conn.execute("SELECT topic_id FROM lessons ORDER BY id")]
+
+
+def recall_history(conn: sqlite3.Connection) -> list[str]:
+    """Topic IDs of every recall question asked, oldest first."""
+    return [topic_id for (topic_id,) in conn.execute("SELECT topic_id FROM recalls ORDER BY id")]
+
+
+def lesson_on(conn: sqlite3.Connection, day: date) -> tuple[str, str, str | None] | None:
+    """The lesson given on `day`, as (topic id, lesson text, recall topic id or None), or None if there was none."""
+    return conn.execute(
+        "SELECT lessons.topic_id, lessons.lesson, recalls.topic_id FROM lessons"
+        " JOIN runs ON runs.id = lessons.run_id"
+        " LEFT JOIN recalls ON recalls.run_id = lessons.run_id"
+        " WHERE runs.run_date = ? ORDER BY lessons.id DESC LIMIT 1",
+        (day.isoformat(),),
+    ).fetchone()
+
+
+def record_lesson(conn: sqlite3.Connection, run_id: int, lesson: Lesson, model: str, now: datetime) -> None:
+    """Save a lesson and its recall question, if any. This is what advances the curriculum."""
+    conn.execute(
+        "INSERT INTO lessons (run_id, topic_id, lesson, model, created_at) VALUES (?, ?, ?, ?, ?)",
+        (run_id, lesson.topic.id, lesson.text, model, now.isoformat()),
+    )
+    if lesson.recall:
+        conn.execute(
+            "INSERT INTO recalls (run_id, topic_id, question, created_at) VALUES (?, ?, ?, ?)",
+            (run_id, lesson.recall.id, lesson.recall.question, now.isoformat()),
+        )

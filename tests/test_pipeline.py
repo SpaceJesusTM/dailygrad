@@ -1,13 +1,15 @@
 """End-to-end runs with every HTTP response, the model and article fetching faked."""
 
 import sqlite3
+from datetime import timedelta
 
 import pytest
 import requests
 
 from conftest import NOW
-from dailygrad import articles, cli, llm, pipeline, stories, web
+from dailygrad import articles, cli, lessons, llm, pipeline, stories, web
 from dailygrad.config import Config, Feed
+from dailygrad.curriculum import build_schedule, load_curriculum
 from dailygrad.sources import hackernews, huggingface
 
 FEED = Feed("Lab Blog", "https://lab.example/rss.xml")
@@ -46,6 +48,8 @@ HN_BODY = {
 #   1 Model X released (Lab Blog)   2 Sparse attention   3 Running LLMs on a laptop
 #   4 Dense attention               5 An AI agent framework   6 GPT wrappers considered harmful
 ARTICLE = "This article explains the topic at length. " * 10
+SCHEDULE = build_schedule(load_curriculum())  # the order the shipped curriculum is taught in
+NO_LESSON_NOTE = "_No lesson today: the local model request failed. The topic will be used in the next run._"
 MODEL_FAILED_NOTE = "_Not summarised: the local model request failed. This story may return in a later digest._"
 
 
@@ -79,21 +83,33 @@ def fake_web(monkeypatch):
     return responses
 
 
+def lesson_text(title):
+    return f"A lesson about {title}, written from the curriculum points and long enough to be plausible."
+
+
 class FakeModel:
-    """Stands in for Ollama: picks self.selected, summarises anything, and counts unloads."""
+    """Stands in for Ollama: picks self.selected, summarises and teaches anything, and counts unloads."""
 
     def __init__(self):
         self.selected = [3, 1, 2]
         self.error = None  # set to an exception to make every request fail
         self.failing_titles = set()  # summaries of these stories fail
+        self.lesson_error = None  # set to an exception to make only the lesson request fail
         self.summary_requests = []
+        self.lesson_requests = []
         self.unloads = 0
 
-    def chat_json(self, config, system, prompt, schema):
+    def chat_json(self, config, system, prompt, schema, temperature=None):
         if self.error:
             raise self.error
         if schema is stories.SELECTION_SCHEMA:
             return {"selected": self.selected}
+        if schema is lessons.LESSON_SCHEMA:
+            title = prompt.splitlines()[2].removeprefix("Topic: ")
+            self.lesson_requests.append(title)
+            if self.lesson_error:
+                raise self.lesson_error
+            return {"lesson": lesson_text(title)}
         title = prompt.splitlines()[0].removeprefix("Title: ")
         self.summary_requests.append(title)
         if title in self.failing_titles:
@@ -124,6 +140,25 @@ def fake_articles(monkeypatch):
 
     monkeypatch.setattr(articles, "fetch_article_text", fetch_article_text)
     return failures
+
+
+def day(number):
+    """A run time on the given day, counting from 0. Days after the first have no fresh news."""
+    return NOW + timedelta(days=number)
+
+
+def table_count(config, table):
+    conn = sqlite3.connect(config.db_path)
+    (count,) = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+    conn.close()
+    return count
+
+
+def lesson_rows(config):
+    conn = sqlite3.connect(config.db_path)
+    rows = conn.execute("SELECT topic_id FROM lessons ORDER BY id").fetchall()
+    conn.close()
+    return [topic_id for (topic_id,) in rows]
 
 
 def shown_titles(config):
@@ -183,7 +218,7 @@ def test_second_run_offers_only_stories_not_yet_shown(config, fake_web, model, f
     third, model_ok = pipeline.run(config, now=NOW)
     assert "No new stories today." in third
     assert model_ok  # an empty digest is not a model failure
-    assert model.unloads == 2  # the third run had no candidates, so the model was never loaded
+    assert model.unloads == 3  # even without news the model is loaded, for the lesson, and unloaded
 
 
 def test_article_failure_degrades_only_that_story(config, fake_web, model, fake_articles):
@@ -269,23 +304,195 @@ def test_disabled_sources_are_not_fetched(config, fake_web):
     assert failed == []
 
 
+# --- the micro-lesson
+
+
+def test_digest_ends_with_the_lesson_and_history_records_it(config, fake_web, model, fake_articles):
+    digest, model_ok = pipeline.run(config, now=NOW)
+
+    first = SCHEDULE[0]
+    assert model_ok
+    assert digest.endswith(f"## AI Micro-Lesson\n\n**{first.title}**\n\n{lesson_text(first.title)}\n")
+    assert digest.index("## AI News") < digest.index("### 3.") < digest.index("## AI Micro-Lesson")
+    assert "Quick recall" not in digest
+    assert model.lesson_requests == [first.title]
+
+    conn = sqlite3.connect(config.db_path)
+    rows = conn.execute("SELECT run_id, topic_id, lesson, model FROM lessons").fetchall()
+    conn.close()
+    assert rows == [(1, first.id, lesson_text(first.title), "qwen3.5:4b-q4_K_M")]
+
+
+def test_each_day_teaches_the_next_topic_and_the_third_asks_a_recall_question(config, fake_web, model, fake_articles):
+    digests = [pipeline.run(config, now=day(number))[0] for number in range(4)]
+
+    assert model.lesson_requests == [topic.title for topic in SCHEDULE[:4]]
+    assert lesson_rows(config) == [topic.id for topic in SCHEDULE[:4]]
+    assert ["**Quick recall:**" in digest for digest in digests] == [False, False, True, False]
+    assert digests[2].endswith(f"**Quick recall:** {SCHEDULE[0].question}\n")
+
+    conn = sqlite3.connect(config.db_path)
+    assert conn.execute("SELECT run_id, topic_id, question FROM recalls").fetchall() == [
+        (3, SCHEDULE[0].id, SCHEDULE[0].question)
+    ]
+    conn.close()
+
+
+def test_a_day_without_news_still_gets_a_lesson(config, fake_web, model):
+    fake_web[huggingface.API_URL], fake_web[hackernews.API_URL] = [], {"hits": []}
+    config.rss.feeds = []
+
+    digest, model_ok = pipeline.run(config, now=NOW)
+
+    assert model_ok
+    assert "No new stories today." in digest
+    assert f"**{SCHEDULE[0].title}**\n\n{lesson_text(SCHEDULE[0].title)}" in digest
+    assert lesson_rows(config) == [SCHEDULE[0].id]
+    assert model.unloads == 1
+
+
+def test_lesson_failure_keeps_the_news_and_does_not_advance_the_curriculum(config, fake_web, model, fake_articles):
+    model.lesson_error = llm.LLMError("Ollama did not return valid JSON")
+
+    digest, model_ok = pipeline.run(config, now=NOW)
+
+    assert not model_ok  # reported to the scheduler as a degraded run
+    assert digest.count("**What happened:**") == 3  # the news digest is complete
+    assert digest.endswith(f"## AI Micro-Lesson\n\n{NO_LESSON_NOTE}\n")
+    assert shown_titles(config) == ["Model X released", "Running LLMs on a laptop", "Sparse attention"]
+    assert lesson_rows(config) == []
+    assert model.unloads == 1
+
+    model.lesson_error = None
+    retry, model_ok = pipeline.run(config, now=NOW)
+
+    assert model_ok
+    assert f"**{SCHEDULE[0].title}**" in retry  # the same topic is tried again, not skipped
+    assert model.lesson_requests == [SCHEDULE[0].title, SCHEDULE[0].title]
+    assert lesson_rows(config) == [SCHEDULE[0].id]
+
+
+def test_recall_schedule_counts_only_lessons_that_were_given(config, fake_web, model, fake_articles):
+    pipeline.run(config, now=day(0))
+    pipeline.run(config, now=day(1))
+    model.lesson_error = llm.LLMError("cannot reach Ollama")
+    failed, _ = pipeline.run(config, now=day(2))  # would have been lesson 3
+    model.lesson_error = None
+    third, _ = pipeline.run(config, now=day(2))
+
+    assert "Quick recall" not in failed
+    assert f"**Quick recall:** {SCHEDULE[0].question}" in third
+    assert lesson_rows(config) == [topic.id for topic in SCHEDULE[:3]]
+
+
+# --- one lesson per calendar day
+
+
+def test_same_day_rerun_shows_the_same_lesson_and_does_not_advance(config, fake_web, model, fake_articles):
+    first, _ = pipeline.run(config, now=NOW)
+    second, model_ok = pipeline.run(config, now=NOW + timedelta(hours=3))
+    third, _ = pipeline.run(config, now=NOW + timedelta(hours=6))
+
+    lesson_section = f"## AI Micro-Lesson\n\n**{SCHEDULE[0].title}**\n\n{lesson_text(SCHEDULE[0].title)}\n"
+    assert model_ok
+    assert first.endswith(lesson_section) and second.endswith(lesson_section) and third.endswith(lesson_section)
+    assert lesson_rows(config) == [SCHEDULE[0].id]  # one lesson recorded, however many runs
+    assert model.lesson_requests == [SCHEDULE[0].title]  # and the model was asked for it only once
+    assert table_count(config, "runs") == 3
+
+
+def test_next_calendar_day_advances_normally(config, fake_web, model, fake_articles):
+    pipeline.run(config, now=day(0))
+    pipeline.run(config, now=day(0))  # a rerun, which must not use up a topic
+    tomorrow, _ = pipeline.run(config, now=day(1))
+    day_after, _ = pipeline.run(config, now=day(2))
+
+    assert f"**{SCHEDULE[1].title}**" in tomorrow
+    assert f"**{SCHEDULE[2].title}**" in day_after
+    assert lesson_rows(config) == [topic.id for topic in SCHEDULE[:3]]
+
+
+def test_failed_lesson_is_retried_on_the_same_day_and_then_kept(config, fake_web, model, fake_articles):
+    model.lesson_error = llm.LLMError("cannot reach Ollama")
+    failed, failed_ok = pipeline.run(config, now=NOW)
+    model.lesson_error = None
+    retried, retried_ok = pipeline.run(config, now=NOW)
+    rerun, _ = pipeline.run(config, now=NOW)
+
+    assert not failed_ok and NO_LESSON_NOTE in failed
+    assert retried_ok and f"**{SCHEDULE[0].title}**" in retried  # the same topic, the same day
+    assert f"**{SCHEDULE[0].title}**" in rerun
+    assert model.lesson_requests == [SCHEDULE[0].title] * 2  # the failed attempt and the retry, not the rerun
+    assert lesson_rows(config) == [SCHEDULE[0].id]
+
+
+def test_same_day_rerun_does_not_use_up_recall_questions(config, fake_web, model, fake_articles):
+    for number in range(3):
+        pipeline.run(config, now=day(number))  # the third day's lesson carries a recall question
+    rerun, _ = pipeline.run(config, now=day(2))
+    for number in range(3, 6):
+        last, _ = pipeline.run(config, now=day(number))
+
+    assert rerun.endswith(f"**Quick recall:** {SCHEDULE[0].question}\n")  # the rerun repeats the day's question
+    assert "**Quick recall:**" in last
+    conn = sqlite3.connect(config.db_path)
+    recalls = conn.execute("SELECT run_id, topic_id FROM recalls ORDER BY id").fetchall()
+    conn.close()
+    # Day 3 (run 3) and day 6 (run 7) only: the rerun (run 4) asked nothing new, and day 6 moved on to the next topic.
+    assert recalls == [(3, SCHEDULE[0].id), (7, SCHEDULE[1].id)]
+    assert lesson_rows(config) == [topic.id for topic in SCHEDULE[:6]]
+
+
+def test_same_day_rerun_without_news_makes_no_model_request(config, fake_web, ollama):
+    fake_web[huggingface.API_URL], fake_web[hackernews.API_URL] = [], {"hits": []}
+    config.rss.feeds = []
+
+    pipeline.run(config, now=NOW)
+    digest, model_ok = pipeline.run(config, now=NOW)
+
+    assert model_ok and f"**{SCHEDULE[0].title}**" in digest
+    # First run: the lesson, then unload. Rerun: nothing to generate, but the unload is still sent.
+    assert ollama.requests == [("chat", "10m"), ("generate", 0), ("generate", 0)]
+
+
+def test_unavailable_model_gives_neither_summaries_nor_lesson(config, fake_web, model, fake_articles):
+    model.error = llm.LLMError("cannot reach Ollama at http://localhost:11434")
+
+    digest, model_ok = pipeline.run(config, now=NOW)
+
+    assert not model_ok
+    assert NO_LESSON_NOTE in digest and MODEL_FAILED_NOTE in digest
+    assert lesson_rows(config) == [] and shown_titles(config) == []
+
+
 # --- model cleanup, using the real llm module with requests.post faked
 
 
 class OllamaServer:
-    """Fake Ollama HTTP API. Records the endpoint of each request; chat can be made to blow up."""
+    """Fake Ollama HTTP API. Records each request; chat can be made to blow up, for all or one kind of request."""
 
     def __init__(self):
         self.requests = []
+        self.kinds = []  # what each chat request asked for: "selected", "what_happened" or "lesson"
+        self.temperatures = []  # the temperature of each chat request
         self.chat_error = None
+        self.lesson_crash = None
 
     def post(self, url, json=None, timeout=None):
         endpoint = url.removeprefix("http://localhost:11434/api/")
         self.requests.append((endpoint, json.get("keep_alive")))
         if endpoint == "chat":
+            kind = next(iter(json["format"]["properties"]))
+            self.kinds.append(kind)
+            self.temperatures.append(json["options"]["temperature"])
             if self.chat_error:
                 raise self.chat_error
-            content = '{"selected": [1, 2, 3], "what_happened": "Something.", "why_it_matters": "Reasons."}'
+            if kind == "lesson" and self.lesson_crash:
+                raise self.lesson_crash
+            content = (
+                '{"selected": [1, 2, 3], "what_happened": "Something.", "why_it_matters": "Reasons.",'
+                ' "lesson": "A lesson that is long enough to pass validation, written by the fake server for tests."}'
+            )
             return FakeOllamaResponse({"message": {"content": content}})
         return FakeOllamaResponse({"done_reason": "unload"})
 
@@ -313,8 +520,11 @@ def ollama(monkeypatch):
 def test_model_stays_loaded_during_the_batch_and_is_unloaded_last(config, fake_web, fake_articles, ollama):
     pipeline.run(config, now=NOW)
 
-    # One selection and three summaries keep the model alive; a final request unloads it.
-    assert ollama.requests == [("chat", "10m")] * 4 + [("generate", 0)]
+    # Selection, three summaries and the lesson share one model load; a final request unloads it.
+    assert ollama.kinds == ["selected", "what_happened", "what_happened", "what_happened", "lesson"]
+    assert ollama.requests == [("chat", "10m")] * 5 + [("generate", 0)]
+    # Only the lesson is generated at temperature 0; news selection and summaries keep the configured 0.2.
+    assert ollama.temperatures == [0.2, 0.2, 0.2, 0.2, 0.0]
 
 
 def test_model_is_unloaded_when_generation_raises(config, fake_web, fake_articles, ollama):
@@ -334,17 +544,32 @@ def test_model_is_unloaded_when_ollama_requests_fail(config, fake_web, fake_arti
     _, model_ok = pipeline.run(config, now=NOW)
 
     assert not model_ok
-    assert ollama.requests == [("chat", "10m"), ("generate", 0)]
+    assert ollama.kinds == ["selected", "lesson"]  # no summaries after a failed selection; the lesson is still tried
+    assert ollama.requests == [("chat", "10m"), ("chat", "10m"), ("generate", 0)]
+    assert lesson_rows(config) == []
 
 
-def test_model_is_not_touched_when_there_are_no_candidates(config, fake_web, ollama):
-    fake_web[FEED.url], fake_web[huggingface.API_URL], fake_web[hackernews.API_URL] = RSS_BODY, [], {"hits": []}
+def test_a_day_without_news_loads_the_model_only_for_the_lesson(config, fake_web, ollama):
+    fake_web[huggingface.API_URL], fake_web[hackernews.API_URL] = [], {"hits": []}
     config.rss.feeds = []
 
     digest, model_ok = pipeline.run(config, now=NOW)
 
     assert "No new stories today." in digest and model_ok
-    assert ollama.requests == []
+    assert f"**{SCHEDULE[0].title}**" in digest
+    assert ollama.kinds == ["lesson"]
+    assert ollama.requests == [("chat", "10m"), ("generate", 0)]
+    assert lesson_rows(config) == [SCHEDULE[0].id]
+
+
+def test_model_is_unloaded_when_lesson_generation_raises(config, fake_web, fake_articles, ollama):
+    ollama.lesson_crash = RuntimeError("unexpected crash while writing the lesson")
+
+    with pytest.raises(RuntimeError, match="writing the lesson"):
+        pipeline.run(config, now=NOW)
+
+    assert ollama.requests[-2:] == [("chat", "10m"), ("generate", 0)]
+    assert lesson_rows(config) == [] and shown_titles(config) == []
 
 
 # --- CLI
@@ -375,6 +600,16 @@ def test_cli_exits_non_zero_but_still_prints_the_digest_when_the_model_fails(
     stdout = capsys.readouterr().out
     assert stdout.startswith("# DailyGrad — ") and MODEL_FAILED_NOTE in stdout
     assert list((tmp_path / "data" / "digests").glob("*.md"))
+
+
+def test_cli_exits_non_zero_when_only_the_lesson_fails(tmp_path, fake_web, model, fake_articles, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    model.lesson_error = llm.LLMError("Ollama did not return valid JSON")
+
+    assert cli.main(["run"]) == 1
+
+    stdout = capsys.readouterr().out
+    assert "**What happened:**" in stdout and NO_LESSON_NOTE in stdout
 
 
 def test_cli_reports_config_errors(tmp_path, capsys):

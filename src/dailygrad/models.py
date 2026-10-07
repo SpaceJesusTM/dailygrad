@@ -1,4 +1,4 @@
-"""The data shapes that flow through the pipeline: candidate news items and digest stories."""
+"""The data shapes that flow through the pipeline: news candidates and stories, curriculum topics and lessons."""
 
 import html
 import re
@@ -45,6 +45,27 @@ class Story:
     why_it_matters: str = ""
     evidence: str = ""  # what the summary was written from: "article", "abstract" or "excerpt"
     model_failed: bool = False  # a model request failed, so this story is not recorded as shown
+
+
+@dataclass(frozen=True)
+class Topic:
+    """One curriculum entry: vetted source material for a micro-lesson, not the lesson itself."""
+
+    id: str
+    track: str
+    series: str
+    part: int  # position within the series, from 1
+    title: str
+    points: tuple[str, ...]
+    question: str  # interview-style; also asked later as a recall question
+    formula: str = ""
+
+
+@dataclass
+class Lesson:
+    topic: Topic
+    text: str
+    recall: Topic | None = None  # an earlier topic whose question is asked alongside this lesson
 
 
 def canonical_url(url: str) -> str:

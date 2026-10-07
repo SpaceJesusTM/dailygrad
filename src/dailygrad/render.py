@@ -3,12 +3,13 @@
 import re
 from datetime import date
 
-from dailygrad.models import Story
+from dailygrad.models import Lesson, Story
 
 EVIDENCE_NOTES = {"excerpt": "summarised from the feed excerpt; the full article could not be retrieved"}
 
 
-def render_digest(day: date, stories: list[Story], failed_sources: list[str]) -> str:
+def render_digest(day: date, stories: list[Story], failed_sources: list[str], lesson: Lesson | None) -> str:
+    """Render the digest. A lesson of None means lesson generation failed this run."""
     lines = [f"# DailyGrad — {day.isoformat()}", "", "## AI News", ""]
     if not stories:
         lines += ["No new stories today.", ""]
@@ -16,7 +17,18 @@ def render_digest(day: date, stories: list[Story], failed_sources: list[str]) ->
         lines += _story_lines(number, story)
     if failed_sources:
         lines += [f"_Sources unavailable this run: {', '.join(failed_sources)}._", ""]
+    lines += _lesson_lines(lesson)
     return "\n".join(lines)
+
+
+def _lesson_lines(lesson: Lesson | None) -> list[str]:
+    lines = ["## AI Micro-Lesson", ""]
+    if lesson is None:
+        return lines + ["_No lesson today: the local model request failed. The topic will be used in the next run._", ""]
+    lines += [f"**{_escape(lesson.topic.title)}**", "", _escape(lesson.text), ""]
+    if lesson.recall:
+        lines += [f"**Quick recall:** {_escape(lesson.recall.question)}", ""]
+    return lines
 
 
 def _story_lines(number: int, story: Story) -> list[str]:
@@ -38,7 +50,7 @@ def _story_lines(number: int, story: Story) -> list[str]:
 
 
 def _escape(text: str) -> str:
-    """Titles and summaries derive from the internet: stop them from adding links, images or formatting."""
+    """Titles, summaries and lessons are not ours to trust: stop them from adding links, images or formatting."""
     return re.sub(r"([\\\[\]*_`<>])", r"\\\1", text)
 
 

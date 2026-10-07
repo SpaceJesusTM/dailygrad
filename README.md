@@ -24,7 +24,7 @@ DailyGrad is designed to run as a short scheduled batch job rather than an alway
 
 🚧 Early development. The project is being built in four passes; see [`PROJECT_SPEC.md`](PROJECT_SPEC.md).
 
-Passes 1 and 2 are done: `dailygrad run` fetches news from Hacker News, Hugging Face Daily Papers and RSS feeds, filters it deterministically, then uses a local Ollama model to pick 3–5 stories and summarise each one. The daily micro-lesson is not implemented yet.
+Passes 1 to 3 are done: `dailygrad run` fetches news from Hacker News, Hugging Face Daily Papers and RSS feeds, filters it deterministically, uses a local Ollama model to pick 3–5 stories and summarise each one, and adds a short micro-lesson from a built-in curriculum.
 
 ## Quick start
 
@@ -48,21 +48,46 @@ Each run prints the digest to stdout, saves it as `data/digests/YYYY-MM-DD.md`, 
 3. Ask the model to choose the 3–5 most useful candidates.
 4. Get the text of the chosen stories only. Papers use their abstract; other stories are downloaded and extracted with Trafilatura.
 5. Ask the model to summarise each story from that text alone: what happened, and why it matters.
-6. Write the digest, record history, and unload the model from memory.
+6. Pick the next curriculum topic and ask the model to turn its vetted points into a 2–3 sentence micro-lesson. This happens even on a day with no news.
+7. Write the digest, record history, and unload the model from memory.
 
 A story whose article cannot be fetched is still listed, as a headline.
 
 If a model request fails, the digest is still written, with the affected stories listed as headlines and marked as not summarised. Those stories are not recorded as shown, so a later run can pick them up again. If Ollama cannot be reached at all, the digest lists the top candidates this way.
+
+If the lesson request fails, the news is unaffected, the digest says there is no lesson, and the same topic is used in the next run.
 
 Exit status:
 
 | Code | Meaning |
 |---|---|
 | 0 | The digest was produced normally. |
-| 1 | A model request failed, so the digest is degraded (or the run crashed). |
+| 1 | A model request failed, so a story summary or the lesson is missing (or the run crashed). |
 | 2 | The configuration is invalid. |
 
 Article URLs and article text are treated as untrusted. Only public `http(s)` addresses are fetched, downloads and extracted text are capped, and the model is told to treat source text as data, not instructions.
+
+## The micro-lesson curriculum
+
+The curriculum is [`src/dailygrad/curriculum.toml`](src/dailygrad/curriculum.toml): 60 topics in three tracks.
+
+| Track | Topics |
+|---|---|
+| Neural-network and deep-learning foundations | 15 |
+| Modern architectures, LLMs and inference | 23 |
+| Agentic AI and production AI systems | 22 |
+
+Each topic holds vetted source material, not a finished lesson: a few core technical points, an optional formula, and an interview-style question. The model only rewords that material. It is told not to add facts or strengthen claims, and it never chooses the topic. Lessons are generated at temperature 0, whatever temperature is configured for the news.
+
+Which topic comes next is deterministic:
+
+- Topics belong to series, such as the 11-part Transformers series, and a series is always taught in order.
+- Lessons come in runs of up to three consecutive topics from one series. After each run, the next comes from a different track: the one that has covered the smallest share of its topics. No track is absent for more than 11 lessons.
+- The curriculum advances once per calendar day. Running again on the same day shows that day's lesson again, unchanged, unless the earlier attempt failed.
+- When every topic has been taught, the cycle starts again.
+- Every third lesson also asks a **Quick recall** question about an earlier topic, without the answer. It is the earlier topic that has been asked about least often, oldest first.
+
+Progress is stored in the database, so deleting `data/` restarts the curriculum. Topic IDs are permanent; add topics rather than renaming them.
 
 ## Configuration
 

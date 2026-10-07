@@ -18,6 +18,7 @@ data_dir = "data"
 url = "http://localhost:11434"
 model = "qwen3.5:4b-q4_K_M"
 context_tokens = 8192
+# Used for choosing and summarising news. Micro-lessons are always generated at temperature 0.
 temperature = 0.2
 # Ask thinking-capable models to answer directly.
 think = false

@@ -82,6 +82,15 @@ def test_chat_json_uses_the_configured_model_settings(post):
     assert call["json"]["options"] == {"temperature": 0.0, "num_ctx": 4096}
 
 
+def test_chat_json_temperature_can_be_overridden_for_one_request(post):
+    llm.chat_json(CONFIG, "s", "p", SCHEMA, temperature=0.0)
+    llm.chat_json(CONFIG, "s", "p", SCHEMA)
+
+    overridden, default = post.calls
+    assert overridden["json"]["options"] == {"temperature": 0.0, "num_ctx": 8192}
+    assert default["json"]["options"] == {"temperature": 0.2, "num_ctx": 8192}  # the configured value is untouched
+
+
 @pytest.mark.parametrize(
     "result, message",
     [

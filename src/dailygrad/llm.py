@@ -18,8 +18,15 @@ class LLMError(Exception):
     """The model could not be reached, or did not return the JSON object we asked for."""
 
 
-def chat_json(config: OllamaConfig, system: str, prompt: str, schema: dict) -> dict:
-    """Send one system + user message and return the reply, which Ollama constrains to `schema`."""
+def chat_json(
+    config: OllamaConfig, system: str, prompt: str, schema: dict, temperature: float | None = None
+) -> dict:
+    """Send one system + user message and return the reply, which Ollama constrains to `schema`.
+
+    `temperature` overrides the configured temperature for this one request.
+    """
+    if temperature is None:
+        temperature = config.temperature
     body = {
         "model": config.model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
@@ -27,7 +34,7 @@ def chat_json(config: OllamaConfig, system: str, prompt: str, schema: dict) -> d
         "stream": False,
         "think": config.think,
         "keep_alive": KEEP_ALIVE,
-        "options": {"temperature": config.temperature, "num_ctx": config.context_tokens},
+        "options": {"temperature": temperature, "num_ctx": config.context_tokens},
     }
     try:
         response = requests.post(_endpoint(config, "chat"), json=body, timeout=(CONNECT_TIMEOUT, config.timeout_seconds))
