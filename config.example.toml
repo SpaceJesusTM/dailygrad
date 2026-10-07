@@ -1,0 +1,48 @@
+# DailyGrad example configuration.
+#
+# Copy to dailygrad.toml (ignored by Git) and edit. Every setting is optional;
+# the values below are the built-in defaults.
+#
+# DailyGrad looks for its config in this order:
+#   1. dailygrad run --config PATH
+#   2. the DAILYGRAD_CONFIG environment variable
+#   3. ./dailygrad.toml
+
+# Where the SQLite database and the dated Markdown digests are written.
+# A relative path resolves against the directory the command is run from.
+data_dir = "data"
+
+[filter]
+# Ignore items older than this.
+max_age_hours = 48
+# Maximum number of candidates kept after filtering.
+shortlist_size = 15
+# Hacker News stories must mention one of these in the title (whole word, case-insensitive).
+# Setting this replaces the built-in list; an empty list disables keyword filtering.
+# keywords = ["AI", "LLM", "transformer"]
+
+[hackernews]
+enabled = true
+min_points = 50
+
+[huggingface]
+enabled = true
+min_upvotes = 5
+
+# RSS/Atom feeds. Defining any [[rss.feeds]] entry replaces the built-in list.
+# Use `feeds = []` under [rss] to disable RSS entirely.
+[[rss.feeds]]
+name = "OpenAI"
+url = "https://openai.com/news/rss.xml"
+
+[[rss.feeds]]
+name = "Google DeepMind"
+url = "https://deepmind.google/blog/rss.xml"
+
+[[rss.feeds]]
+name = "Google Research"
+url = "https://research.google/blog/rss/"
+
+[[rss.feeds]]
+name = "Hugging Face Blog"
+url = "https://huggingface.co/blog/feed.xml"

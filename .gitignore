@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# DailyGrad runtime data and local configuration
+data/
+dailygrad.toml

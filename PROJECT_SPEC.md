@@ -184,3 +184,24 @@ Optional Discord delivery, documentation, sample digest, CI, license and final p
 Avoid adding features beyond this specification unless they are necessary to make the defined workflow reliable.
 
 Prefer clear, ordinary Python over abstractions. The finished project should be easy for another developer to understand in one sitting.
+
+### Integration philosophy
+
+DailyGrad must remain fully functional as a standalone application.
+
+The core project must not depend on Tari, OpenClaw, Discord, or any other assistant platform. Its primary contract is:
+
+- generate the daily digest
+- persist local state/history
+- write human-readable Markdown output
+- expose a stable machine-readable output such as JSON
+- print the finished digest to stdout
+
+Assistant/platform integrations must be implemented as optional adapters or external orchestration around the core application.
+
+For the author's personal deployment, Tari/OpenClaw may later:
+- schedule `dailygrad run`
+- deliver the generated digest to Discord
+- read the latest Markdown/JSON output for conversational follow-up
+
+This Tari/OpenClaw integration should be implemented only after the standalone core is complete and should not introduce Tari-specific dependencies into DailyGrad.
