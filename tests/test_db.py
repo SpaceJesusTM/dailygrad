@@ -1,5 +1,8 @@
+import sqlite3
+
 from conftest import NOW
 from dailygrad import db
+from dailygrad.models import Story
 
 
 def test_seen_items_are_not_shown_until_a_run_records_them(conn, make_candidate):
@@ -52,3 +55,38 @@ def test_history_survives_reconnecting(tmp_path, make_candidate):
     second = db.connect(path)
     assert db.was_shown(second, item)
     second.close()
+
+
+def test_summaries_are_saved_for_summarised_stories_only(conn, make_candidate):
+    summarised = Story(make_candidate("Model X"), "X was released.", "It is small.", "article")
+    headline_only = Story(make_candidate("Model Y"))
+    candidates = [summarised.candidate, headline_only.candidate]
+    with conn:
+        db.record_seen(conn, candidates, NOW)
+        run_id = db.record_run(conn, NOW.date(), "digest.md", shown=candidates, now=NOW)
+        db.record_summaries(conn, run_id, [summarised, headline_only], "test-model", NOW)
+
+    rows = conn.execute(
+        "SELECT items.title, run_id, what_happened, why_it_matters, evidence, model"
+        " FROM summaries JOIN items ON items.id = summaries.item_id"
+    ).fetchall()
+    assert rows == [("Model X", run_id, "X was released.", "It is small.", "article", "test-model")]
+
+
+def test_phase_1_database_gains_the_summaries_table(tmp_path, make_candidate):
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(db.SCHEMA.split("-- The summary written")[0])  # the Phase 1 schema: runs and items only
+    old.execute("INSERT INTO runs (run_date, created_at, digest_path) VALUES ('2026-10-06', 'then', 'old.md')")
+    old.execute(
+        "INSERT INTO items (url_key, title_key, source, title, url, first_seen_at, shown_run_id)"
+        " VALUES ('example.com/old', 'old', 'Hacker News', 'Old', 'https://example.com/old', 'then', 1)"
+    )
+    old.commit()
+    old.close()
+
+    conn = db.connect(path)
+
+    assert db.was_shown(conn, make_candidate("Old", url="https://example.com/old"))
+    assert conn.execute("SELECT COUNT(*) FROM summaries").fetchone() == (0,)
+    conn.close()

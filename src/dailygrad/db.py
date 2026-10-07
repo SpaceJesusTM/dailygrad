@@ -1,10 +1,10 @@
-"""SQLite history: which news items have been seen and shown, and when digests ran."""
+"""SQLite history: which news items have been seen and shown, their summaries, and when digests ran."""
 
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
-from dailygrad.models import Candidate
+from dailygrad.models import Candidate, Story
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -28,6 +28,17 @@ CREATE TABLE IF NOT EXISTS items (
 );
 
 CREATE INDEX IF NOT EXISTS items_title_key ON items(title_key);
+
+-- The summary written for a shown item. Shown items that could not be summarised have no row.
+CREATE TABLE IF NOT EXISTS summaries (
+    item_id INTEGER PRIMARY KEY REFERENCES items(id),
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    what_happened TEXT NOT NULL,
+    why_it_matters TEXT NOT NULL,
+    evidence TEXT NOT NULL,  -- 'article', 'abstract' or 'excerpt'
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -68,3 +79,17 @@ def record_run(
         [(run_id, c.url_key) for c in shown],
     )
     return run_id
+
+
+def record_summaries(conn: sqlite3.Connection, run_id: int, stories: list[Story], model: str, now: datetime) -> None:
+    """Save the summaries of a run's stories. Items must already be recorded as seen."""
+    conn.executemany(
+        "INSERT INTO summaries (item_id, run_id, what_happened, why_it_matters, evidence, model, created_at)"
+        " SELECT id, ?, ?, ?, ?, ?, ? FROM items WHERE url_key = ?"
+        " ON CONFLICT(item_id) DO NOTHING",
+        [
+            (run_id, s.what_happened, s.why_it_matters, s.evidence, model, now.isoformat(), s.candidate.url_key)
+            for s in stories
+            if s.what_happened
+        ],
+    )

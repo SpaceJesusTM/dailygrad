@@ -7,6 +7,7 @@ from urllib3.util.retry import Retry
 from dailygrad import __version__
 
 TIMEOUT = (5, 20)  # seconds: connect, read
+USER_AGENT = f"DailyGrad/{__version__}"
 
 
 def _build_session() -> requests.Session:
@@ -14,7 +15,7 @@ def _build_session() -> requests.Session:
     session = requests.Session()
     session.mount("https://", HTTPAdapter(max_retries=retry))
     session.mount("http://", HTTPAdapter(max_retries=retry))
-    session.headers["User-Agent"] = f"DailyGrad/{__version__}"
+    session.headers["User-Agent"] = USER_AGENT
     return session
 
 

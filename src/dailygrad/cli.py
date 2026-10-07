@@ -29,8 +29,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"dailygrad: {exc}", file=sys.stderr)
         return 2
 
-    print(pipeline.run(config), end="")
-    return 0
+    digest, model_ok = pipeline.run(config)
+    print(digest, end="")
+    return 0 if model_ok else 1  # non-zero tells a scheduler the digest is degraded
 
 
 if __name__ == "__main__":

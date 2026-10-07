@@ -32,7 +32,8 @@ def parse(payload: list) -> list[Candidate]:
                 url=PAPER_URL.format(paper_id),
                 published=datetime.fromisoformat(featured),
                 score=paper.get("upvotes") or 0,
-                summary=clean_text(paper.get("summary") or ""),
+                # Keep the whole abstract: paper summaries are written from it.
+                summary=clean_text(paper.get("summary") or "", limit=4000),
             )
         )
     return candidates

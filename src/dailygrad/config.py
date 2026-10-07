@@ -61,8 +61,19 @@ class RssConfig:
 
 
 @dataclass
+class OllamaConfig:
+    url: str = "http://localhost:11434"
+    model: str = "qwen3.5:4b-q4_K_M"
+    context_tokens: int = 8192
+    temperature: float = 0.2
+    think: bool = False
+    timeout_seconds: int = 180  # per model request; the first one includes loading the model
+
+
+@dataclass
 class Config:
     data_dir: str = "data"  # relative paths resolve against the working directory
+    ollama: OllamaConfig = field(default_factory=OllamaConfig)
     filter: FilterConfig = field(default_factory=FilterConfig)
     hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
     huggingface: HuggingFaceConfig = field(default_factory=HuggingFaceConfig)
@@ -109,6 +120,8 @@ def _apply(target, values: dict, prefix: str) -> None:
         if not hasattr(target, key):
             raise ConfigError(f"unknown setting: {prefix}{key}")
         current = getattr(target, key)
+        if isinstance(current, float) and type(value) is int:
+            value = float(value)  # let `temperature = 0` mean 0.0
         if is_dataclass(current):
             if not isinstance(value, dict):
                 raise ConfigError(f"{prefix}{key} must be a table")

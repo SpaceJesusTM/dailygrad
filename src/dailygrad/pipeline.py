@@ -1,21 +1,26 @@
-"""The run: fetch -> filter -> render -> save -> record history."""
+"""The run: fetch -> filter -> select and summarise -> render -> save -> record history."""
 
 import logging
 from datetime import datetime, timezone
 from functools import partial
 
-from dailygrad import db
+from dailygrad import db, llm
 from dailygrad.config import Config
 from dailygrad.filtering import build_shortlist
 from dailygrad.models import Candidate
 from dailygrad.render import render_digest
 from dailygrad.sources import hackernews, huggingface, rss
+from dailygrad.stories import build_stories
 
 log = logging.getLogger(__name__)
 
 
-def run(config: Config, now: datetime | None = None) -> str:
-    """Produce today's digest, save it and record it in the database. Returns the Markdown."""
+def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
+    """Produce today's digest, save it and record it in the database.
+
+    Returns the Markdown, and False if a model request failed. In that case the digest is
+    still written, but the stories the model failed on are not recorded as shown.
+    """
     now = now or datetime.now(timezone.utc)
     today = now.astimezone().date()  # the digest is dated in local time
 
@@ -24,7 +29,15 @@ def run(config: Config, now: datetime | None = None) -> str:
     conn = db.connect(config.db_path)
     try:
         shortlist = build_shortlist(candidates, config, conn, now)
-        digest = render_digest(today, shortlist, failed_sources)
+
+        stories = []
+        if shortlist:  # with nothing to select, the model is never loaded
+            try:
+                stories = build_stories(shortlist, config.ollama)
+            finally:
+                llm.unload(config.ollama)  # free the model's memory even if generation raised
+
+        digest = render_digest(today, stories, failed_sources)
 
         config.digest_dir.mkdir(parents=True, exist_ok=True)
         digest_path = config.digest_dir / f"{today.isoformat()}.md"
@@ -32,13 +45,22 @@ def run(config: Config, now: datetime | None = None) -> str:
 
         with conn:  # one transaction
             db.record_seen(conn, shortlist, now)
-            # Until the model picks 3-5 stories (Pass 2), the digest shows the whole shortlist.
-            db.record_run(conn, today, digest_path, shown=shortlist, now=now)
+            # Only stories in the digest count as shown, and not those the model failed on:
+            # they and the rest of the shortlist can come back in a later run.
+            shown = [story.candidate for story in stories if not story.model_failed]
+            run_id = db.record_run(conn, today, digest_path, shown, now)
+            db.record_summaries(conn, run_id, stories, config.ollama.model, now)
     finally:
         conn.close()
 
-    log.info("%d candidates fetched, %d in digest, saved to %s", len(candidates), len(shortlist), digest_path)
-    return digest
+    log.info(
+        "%d candidates fetched, %d shortlisted, %d in digest, saved to %s",
+        len(candidates), len(shortlist), len(stories), digest_path,
+    )  # fmt: skip
+    failures = sum(story.model_failed for story in stories)
+    if failures:
+        log.error("the model failed on %d of %d stories; they were not recorded as shown", failures, len(stories))
+    return digest, failures == 0
 
 
 def fetch_all(config: Config) -> tuple[list[Candidate], list[str]]:

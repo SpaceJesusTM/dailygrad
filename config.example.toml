@@ -12,10 +12,22 @@
 # A relative path resolves against the directory the command is run from.
 data_dir = "data"
 
+# The local model, served by Ollama. Any Ollama model that supports structured
+# (JSON schema) output works; pull it first with `ollama pull <model>`.
+[ollama]
+url = "http://localhost:11434"
+model = "qwen3.5:4b-q4_K_M"
+context_tokens = 8192
+temperature = 0.2
+# Ask thinking-capable models to answer directly.
+think = false
+# Time allowed for one model request. Raise it for large models or CPU-only machines.
+timeout_seconds = 180
+
 [filter]
 # Ignore items older than this.
 max_age_hours = 48
-# Maximum number of candidates kept after filtering.
+# Maximum number of candidates handed to the model, which picks 3-5 of them.
 shortlist_size = 15
 # Hacker News stories must mention one of these in the title (whole word, case-insensitive).
 # Setting this replaces the built-in list; an empty list disables keyword filtering.

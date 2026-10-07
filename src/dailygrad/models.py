@@ -1,4 +1,4 @@
-"""The one data shape that flows through the pipeline: a candidate news item."""
+"""The data shapes that flow through the pipeline: candidate news items and digest stories."""
 
 import html
 import re
@@ -7,6 +7,7 @@ from datetime import datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 TRACKING_PARAMS = {"ref", "source", "fbclid", "gclid", "mc_cid", "mc_eid"}
+SCORE_UNITS = {"hackernews": "points", "huggingface": "upvotes"}
 
 
 @dataclass
@@ -26,6 +27,24 @@ class Candidate:
     @property
     def title_key(self) -> str:
         return normalize_title(self.title)
+
+    @property
+    def byline(self) -> str:
+        """The source plus its popularity signal, e.g. "Hacker News, 312 points"."""
+        if self.kind in SCORE_UNITS:
+            return f"{self.source}, {self.score} {SCORE_UNITS[self.kind]}"
+        return self.source
+
+
+@dataclass
+class Story:
+    """A candidate chosen for the digest. The summary fields stay empty if no summary could be written."""
+
+    candidate: Candidate
+    what_happened: str = ""
+    why_it_matters: str = ""
+    evidence: str = ""  # what the summary was written from: "article", "abstract" or "excerpt"
+    model_failed: bool = False  # a model request failed, so this story is not recorded as shown
 
 
 def canonical_url(url: str) -> str:

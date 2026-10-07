@@ -20,13 +20,15 @@ def parse(payload: dict) -> list[Candidate]:
         title, created = hit.get("title"), hit.get("created_at_i")
         if not title or not created:
             continue
+        # Submitters sometimes paste a URL with a stray trailing backslash, which makes it a 404.
+        url = (hit.get("url") or "").rstrip("\\")
         candidates.append(
             Candidate(
                 kind="hackernews",
                 source="Hacker News",
                 title=title.strip(),
                 # Ask HN / Show HN text posts have no external URL.
-                url=hit.get("url") or ITEM_URL.format(hit["objectID"]),
+                url=url or ITEM_URL.format(hit["objectID"]),
                 published=datetime.fromtimestamp(created, timezone.utc),
                 score=hit.get("points") or 0,
             )

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from dailygrad.config import Feed
+from dailygrad.models import canonical_url
 from dailygrad.sources import hackernews, huggingface, rss
 
 HN_PAYLOAD = {
@@ -75,6 +76,33 @@ def test_hackernews_parse():
     assert ask.url == "https://news.ycombinator.com/item?id=102"
 
 
+def hn_story(url):
+    (story,) = hackernews.parse({"hits": [{"objectID": "7", "title": "T", "url": url, "created_at_i": 1791292549}]})
+    return story
+
+
+def test_hackernews_removes_a_stray_trailing_backslash():
+    """Regression: HN listed https://mistral.ai/news/mistral-large-4/\\ which is a 404 as written."""
+    story = hn_story("https://mistral.ai/news/mistral-large-4/\\")
+
+    assert story.url == "https://mistral.ai/news/mistral-large-4/"
+    assert story.url_key == canonical_url("https://mistral.ai/news/mistral-large-4/")  # dedupes with the clean URL
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("https://example.com/post\\\\", "https://example.com/post"),  # several trailing backslashes
+        ("https://example.com/a\\b/post", "https://example.com/a\\b/post"),  # a backslash elsewhere is left alone
+        ("https://example.com/post/", "https://example.com/post/"),  # a normal URL is untouched
+        ("https://example.com/post?q=a%5C", "https://example.com/post?q=a%5C"),  # an encoded backslash is data
+        ("\\", "https://news.ycombinator.com/item?id=7"),  # nothing left: fall back to the HN item
+    ],
+)
+def test_hackernews_url_cleanup_is_limited_to_trailing_backslashes(raw, expected):
+    assert hn_story(raw).url == expected
+
+
 def test_huggingface_parse():
     papers = huggingface.parse(HF_PAYLOAD)
 
@@ -85,6 +113,15 @@ def test_huggingface_parse():
     assert featured.score == 42
     assert featured.published == datetime(2026, 10, 7, tzinfo=timezone.utc)
     assert fallback.published == datetime(2026, 10, 5, 20, tzinfo=timezone.utc)
+
+
+def test_huggingface_keeps_the_whole_abstract():
+    abstract = "A long abstract sentence. " * 80  # about 2,000 characters
+    payload = [{"paper": {"id": "2610.1", "title": "T", "summary": abstract, "submittedOnDailyAt": "2026-10-07T00:00:00.000Z"}}]
+
+    (paper,) = huggingface.parse(payload)
+
+    assert paper.summary == abstract.strip()
 
 
 def test_rss_parse():

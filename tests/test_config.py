@@ -59,12 +59,25 @@ def test_config_found_via_environment_then_working_directory(tmp_path, monkeypat
     assert load_config().filter.shortlist_size == 19
 
 
+def test_ollama_defaults_and_overrides(tmp_path):
+    defaults = Config().ollama
+    assert (defaults.url, defaults.model) == ("http://localhost:11434", "qwen3.5:4b-q4_K_M")
+    assert (defaults.context_tokens, defaults.temperature, defaults.think) == (8192, 0.2, False)
+
+    path = write(tmp_path, '[ollama]\nurl = "http://gpu-box:11434"\nmodel = "llama3.2:3b"\ntemperature = 0\n')
+    ollama = load_config(path).ollama
+
+    assert (ollama.url, ollama.model, ollama.temperature) == ("http://gpu-box:11434", "llama3.2:3b", 0.0)
+    assert ollama.context_tokens == 8192
+
+
 @pytest.mark.parametrize(
     "text, message",
     [
         ("[filter]\nshortlist = 5\n", "unknown setting: filter.shortlist"),
         ("[hackernews]\nmin_points = 'lots'\n", "hackernews.min_points must be of type int"),
         ("filter = 3\n", "filter must be a table"),
+        ("[ollama]\ntemperature = 'warm'\n", "ollama.temperature must be of type float"),
         ("[[rss.feeds]]\nname = 'No URL'\n", "needs exactly a name and a url"),
         ("not toml at all", "cannot read config file"),
     ],

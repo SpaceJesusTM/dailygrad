@@ -1,8 +1,10 @@
+import socket
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import requests
 
-from dailygrad import db, web
+from dailygrad import db
 from dailygrad.models import Candidate
 
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
@@ -10,12 +12,13 @@ NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    """Tests must never reach the internet. Tests that need responses replace web.get themselves."""
+    """Tests must never reach the internet, Ollama included. Tests that need responses fake them."""
 
-    def blocked(url, params=None):
-        raise AssertionError(f"test tried to fetch {url}")
+    def blocked(*args, **kwargs):
+        raise AssertionError("test tried to use the network")
 
-    monkeypatch.setattr(web, "get", blocked)
+    monkeypatch.setattr(requests.Session, "request", blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
 
 
 @pytest.fixture
@@ -27,7 +30,9 @@ def conn(tmp_path):
 
 @pytest.fixture
 def make_candidate():
-    def make(title="A new LLM", url=None, kind="hackernews", source="Hacker News", score=100, age_hours=1):
+    def make(
+        title="A new LLM", url=None, kind="hackernews", source="Hacker News", score=100, age_hours=1, summary=""
+    ):
         return Candidate(
             kind=kind,
             source=source,
@@ -35,6 +40,7 @@ def make_candidate():
             url=url or f"https://example.com/{title.replace(' ', '-')}",
             published=NOW - timedelta(hours=age_hours),
             score=score,
+            summary=summary,
         )
 
     return make
