@@ -1,5 +1,7 @@
 # DailyGrad
 
+**AI disclosure:** This project was developed with assistance from **ChatGPT 5.6 Sol** and **Claude Code with Opus 5.5**. AI was used for planning, implementation, review, and documentation; final decisions and validation were human-directed.
+
 DailyGrad is a small, self-hosted daily AI briefing. Once a day it gathers AI news, has a
 local model pick and summarise five stories, and adds one short technical lesson from a
 built-in curriculum. Everything runs on your own machine through [Ollama](https://ollama.com).
