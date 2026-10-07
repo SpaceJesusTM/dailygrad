@@ -31,6 +31,7 @@ def parse(payload: dict) -> list[Candidate]:
                 url=url or ITEM_URL.format(hit["objectID"]),
                 published=datetime.fromtimestamp(created, timezone.utc),
                 score=hit.get("points") or 0,
+                comments=hit.get("num_comments") or 0,
             )
         )
     return candidates

@@ -8,7 +8,7 @@ from pathlib import Path
 DEFAULT_CONFIG_FILE = "dailygrad.toml"
 CONFIG_ENV_VAR = "DAILYGRAD_CONFIG"
 
-# Matched as whole words (plural allowed) against Hacker News titles only.
+# Matched as whole words (plural allowed) against Hacker News titles, to rank AI stories higher.
 DEFAULT_KEYWORDS = [
     "AI", "AGI", "LLM", "GPT", "machine learning", "deep learning", "neural",
     "transformer", "diffusion", "language model", "foundation model",
@@ -39,7 +39,7 @@ DEFAULT_FEEDS = [
 @dataclass
 class FilterConfig:
     max_age_hours: int = 48
-    shortlist_size: int = 15
+    shortlist_size: int = 18
     keywords: list[str] = field(default_factory=lambda: list(DEFAULT_KEYWORDS))
 
 
@@ -47,6 +47,7 @@ class FilterConfig:
 class HackerNewsConfig:
     enabled: bool = True
     min_points: int = 50
+    keyword_boost: float = 4.0  # a title matching a keyword ranks as if it were this many times as popular
 
 
 @dataclass
@@ -73,6 +74,7 @@ class OllamaConfig:
 @dataclass
 class Config:
     data_dir: str = "data"  # relative paths resolve against the working directory
+    final_story_count: int = 5  # stories in the digest, when that many candidates are available
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     filter: FilterConfig = field(default_factory=FilterConfig)
     hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
@@ -87,14 +89,27 @@ class Config:
     def digest_dir(self) -> Path:
         return Path(self.data_dir).expanduser() / "digests"
 
+    @property
+    def latest_markdown_path(self) -> Path:
+        return Path(self.data_dir).expanduser() / "latest.md"
 
-def load_config(path: Path | None = None) -> Config:
-    """Load settings from `path`, else $DAILYGRAD_CONFIG, else ./dailygrad.toml, else defaults."""
+    @property
+    def latest_json_path(self) -> Path:
+        return Path(self.data_dir).expanduser() / "latest.json"
+
+
+def find_config_file(path: Path | None = None) -> Path | None:
+    """The config file to use: `path`, else $DAILYGRAD_CONFIG, else ./dailygrad.toml, else None (defaults)."""
     if path is None and os.environ.get(CONFIG_ENV_VAR):
         path = Path(os.environ[CONFIG_ENV_VAR])
     if path is None and Path(DEFAULT_CONFIG_FILE).exists():
         path = Path(DEFAULT_CONFIG_FILE)
+    return path
 
+
+def load_config(path: Path | None = None) -> Config:
+    """Load settings from the file chosen by find_config_file, on top of the built-in defaults."""
+    path = find_config_file(path)
     config = Config()
     if path is None:
         return config
@@ -111,6 +126,13 @@ def load_config(path: Path | None = None) -> Config:
             config.rss.feeds = [Feed(**feed) for feed in config.rss.feeds]
         except TypeError as exc:
             raise ConfigError("each [[rss.feeds]] entry needs exactly a name and a url") from exc
+
+    if config.final_story_count < 1:
+        raise ConfigError("final_story_count must be at least 1")
+    if config.filter.shortlist_size < config.final_story_count:
+        raise ConfigError("filter.shortlist_size must be at least final_story_count")
+    if config.hackernews.keyword_boost < 1:
+        raise ConfigError("hackernews.keyword_boost must be at least 1")
     return config
 
 

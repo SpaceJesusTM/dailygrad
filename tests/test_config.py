@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from dailygrad.config import DEFAULT_FEEDS, Config, ConfigError, Feed, load_config
+from dailygrad.config import DEFAULT_FEEDS, Config, ConfigError, Feed, find_config_file, load_config
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +61,24 @@ def test_config_found_via_environment_then_working_directory(tmp_path, monkeypat
     assert load_config().filter.shortlist_size == 19
 
 
+def test_story_count_and_ranking_defaults_and_overrides(tmp_path):
+    defaults = Config()
+    assert (defaults.final_story_count, defaults.filter.shortlist_size, defaults.hackernews.keyword_boost) == (5, 18, 4.0)
+    assert str(defaults.latest_markdown_path) == "data/latest.md" and str(defaults.latest_json_path) == "data/latest.json"
+
+    config = load_config(write(tmp_path, "final_story_count = 4\n[hackernews]\nkeyword_boost = 2\n"))
+
+    assert (config.final_story_count, config.hackernews.keyword_boost) == (4, 2.0)
+
+
+def test_find_config_file(tmp_path, monkeypatch):
+    assert find_config_file() is None
+    explicit = write(tmp_path, "")
+    assert find_config_file(explicit) == explicit
+    monkeypatch.setenv("DAILYGRAD_CONFIG", str(explicit))
+    assert find_config_file() == explicit
+
+
 def test_ollama_defaults_and_overrides(tmp_path):
     defaults = Config().ollama
     assert (defaults.url, defaults.model) == ("http://localhost:11434", "qwen3.5:4b-q4_K_M")
@@ -77,6 +97,9 @@ def test_ollama_defaults_and_overrides(tmp_path):
         ("[filter]\nshortlist = 5\n", "unknown setting: filter.shortlist"),
         ("[hackernews]\nmin_points = 'lots'\n", "hackernews.min_points must be of type int"),
         ("filter = 3\n", "filter must be a table"),
+        ("final_story_count = 0\n", "final_story_count must be at least 1"),
+        ("final_story_count = 6\n[filter]\nshortlist_size = 5\n", "shortlist_size must be at least final_story_count"),
+        ("[hackernews]\nkeyword_boost = 0.5\n", "keyword_boost must be at least 1"),
         ("[ollama]\ntemperature = 'warm'\n", "ollama.temperature must be of type float"),
         ("[[rss.feeds]]\nname = 'No URL'\n", "needs exactly a name and a url"),
         ("not toml at all", "cannot read config file"),
@@ -90,3 +113,10 @@ def test_invalid_config_is_rejected(tmp_path, text, message):
 def test_missing_config_file_is_an_error(tmp_path):
     with pytest.raises(ConfigError, match="cannot read config file"):
         load_config(tmp_path / "missing.toml")
+
+
+def test_example_config_is_valid_and_matches_the_built_in_defaults():
+    """config.example.toml documents the defaults, so the two must not drift apart."""
+    example = Path(__file__).parent.parent / "config.example.toml"
+
+    assert load_config(example) == Config()

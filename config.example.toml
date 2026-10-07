@@ -7,10 +7,16 @@
 #   1. dailygrad run --config PATH
 #   2. the DAILYGRAD_CONFIG environment variable
 #   3. ./dailygrad.toml
+#
+# `dailygrad config` prints the settings in effect and where every file goes.
 
-# Where the SQLite database and the dated Markdown digests are written.
-# A relative path resolves against the directory the command is run from.
+# Where the database, the dated digests, latest.md and latest.json are written.
+# A relative path resolves against the directory the command is run from, so
+# use an absolute path when a scheduler runs DailyGrad.
 data_dir = "data"
+
+# How many news stories a digest shows. If fewer candidates are available, it shows those.
+final_story_count = 5
 
 # The local model, served by Ollama. Any Ollama model that supports structured
 # (JSON schema) output works; pull it first with `ollama pull <model>`.
@@ -28,15 +34,19 @@ timeout_seconds = 180
 [filter]
 # Ignore items older than this.
 max_age_hours = 48
-# Maximum number of candidates handed to the model, which picks 3-5 of them.
-shortlist_size = 15
-# Hacker News stories must mention one of these in the title (whole word, case-insensitive).
-# Setting this replaces the built-in list; an empty list disables keyword filtering.
+# Maximum number of candidates handed to the model, which picks final_story_count of them.
+# The sources share these places equally.
+shortlist_size = 18
+# Words that mark a Hacker News title as AI-related (whole word, case-insensitive).
+# A match raises the story's rank; it is not required. Setting this replaces the
+# built-in list, and an empty list ranks Hacker News by popularity and freshness alone.
 # keywords = ["AI", "LLM", "transformer"]
 
 [hackernews]
 enabled = true
 min_points = 50
+# A title matching a keyword ranks as if the story were this many times as popular.
+keyword_boost = 4.0
 
 [huggingface]
 enabled = true

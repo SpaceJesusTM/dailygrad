@@ -31,8 +31,9 @@ def conn(tmp_path):
 @pytest.fixture
 def make_candidate():
     def make(
-        title="A new LLM", url=None, kind="hackernews", source="Hacker News", score=100, age_hours=1, summary=""
-    ):
+        title="A new LLM", url=None, kind="hackernews", source="Hacker News", score=100, age_hours=1, summary="",
+        comments=0,
+    ):  # fmt: skip
         return Candidate(
             kind=kind,
             source=source,
@@ -41,6 +42,7 @@ def make_candidate():
             published=NOW - timedelta(hours=age_hours),
             score=score,
             summary=summary,
+            comments=comments,
         )
 
     return make

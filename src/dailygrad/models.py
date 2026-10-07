@@ -18,6 +18,7 @@ class Candidate:
     url: str
     published: datetime  # timezone-aware, UTC
     score: int = 0  # HN points or HF upvotes; RSS items have no popularity signal
+    comments: int = 0  # HN comment count
     summary: str = ""  # paper abstract or feed description, plain text
 
     @property

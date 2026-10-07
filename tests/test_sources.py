@@ -72,6 +72,7 @@ def test_hackernews_parse():
     assert story.title == "Mistral Large 4"
     assert story.url == "https://mistral.ai/news/mistral-large-4/"
     assert story.score == 1677
+    assert (story.comments, ask.comments) == (1001, 0)
     assert story.published == datetime.fromtimestamp(1791292549, timezone.utc)
     assert ask.url == "https://news.ycombinator.com/item?id=102"
 

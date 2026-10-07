@@ -1,4 +1,4 @@
-"""The run: fetch -> filter -> select and summarise -> lesson -> render -> save -> record history."""
+"""The run: fetch -> filter -> select and summarise -> lesson -> render -> write outputs -> record history."""
 
 import logging
 from datetime import datetime, timezone
@@ -10,6 +10,7 @@ from dailygrad.curriculum import load_curriculum
 from dailygrad.filtering import build_shortlist
 from dailygrad.lessons import build_lesson, restore_lesson
 from dailygrad.models import Candidate
+from dailygrad.output import dated_markdown_path, digest_document, write_outputs
 from dailygrad.render import render_digest
 from dailygrad.sources import hackernews, huggingface, rss
 from dailygrad.stories import build_stories
@@ -18,11 +19,11 @@ log = logging.getLogger(__name__)
 
 
 def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
-    """Produce today's digest, save it and record it in the database.
+    """Produce today's digest, write its output files and record it in the database.
 
     Returns the Markdown, and False if a model request failed. In that case the digest is
-    still written, but the stories the model failed on are not recorded as shown, and a
-    failed lesson does not advance the curriculum.
+    still written (with status "degraded" in latest.json), but the stories the model failed
+    on are not recorded as shown, and a failed lesson does not advance the curriculum.
 
     The curriculum advances once per calendar day: a rerun on the same day shows that day's
     lesson again instead of generating the next one.
@@ -44,19 +45,18 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
 
         # News and lesson share one model load. The lesson is generated even on a day without news.
         try:
-            stories = build_stories(shortlist, config.ollama) if shortlist else []
+            stories = build_stories(shortlist, config.ollama, config.final_story_count) if shortlist else []
             if lesson_is_new:
                 lesson = build_lesson(topics, db.lesson_history(conn), db.recall_history(conn), config.ollama)
         finally:
             llm.unload(config.ollama)  # free the model's memory even if generation raised
 
         digest = render_digest(today, stories, failed_sources, lesson)
+        digest_path = dated_markdown_path(config, today)
 
-        config.digest_dir.mkdir(parents=True, exist_ok=True)
-        digest_path = config.digest_dir / f"{today.isoformat()}.md"
-        digest_path.write_text(digest, encoding="utf-8")
-
-        with conn:  # one transaction
+        # One transaction. The files are written last, because they carry the run's id: if
+        # writing fails the run is rolled back, so no file ever names a run that was not recorded.
+        with conn:
             db.record_seen(conn, shortlist, now)
             # Only stories in the digest count as shown, and not those the model failed on:
             # they and the rest of the shortlist can come back in a later run.
@@ -65,6 +65,8 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
             db.record_summaries(conn, run_id, stories, config.ollama.model, now)
             if lesson and lesson_is_new:  # recording a lesson is what advances the curriculum
                 db.record_lesson(conn, run_id, lesson, config.ollama.model, now)
+            document = digest_document(run_id, today, now, config.ollama.model, stories, failed_sources, lesson)
+            write_outputs(config, today, digest, document)
     finally:
         conn.close()
 
@@ -75,7 +77,7 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
     failures = sum(story.model_failed for story in stories)
     if failures:
         log.error("the model failed on %d of %d stories; they were not recorded as shown", failures, len(stories))
-    return digest, failures == 0 and lesson is not None
+    return digest, document["status"] == "ok"
 
 
 def fetch_all(config: Config) -> tuple[list[Candidate], list[str]]:

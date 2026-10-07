@@ -1,5 +1,7 @@
 """End-to-end runs with every HTTP response, the model and article fetching faked."""
 
+import json
+import os
 import sqlite3
 from datetime import timedelta
 
@@ -65,6 +67,7 @@ class FakeResponse:
 def config(tmp_path):
     config = Config(data_dir=str(tmp_path / "data"))
     config.rss.feeds = [FEED]
+    config.final_story_count = 3  # the six fixture candidates then leave the model a real choice
     return config
 
 
@@ -242,9 +245,9 @@ def test_unavailable_model_gives_a_degraded_digest_and_consumes_nothing(config, 
     digest, model_ok = pipeline.run(config, now=NOW)
 
     assert not model_ok
-    assert digest.count("### ") == 5  # the top of the deterministic shortlist, as headlines
+    assert digest.count("### ") == 3  # the top of the deterministic shortlist, as headlines
     assert "**What happened:**" not in digest
-    assert digest.count(MODEL_FAILED_NOTE) == 5
+    assert digest.count(MODEL_FAILED_NOTE) == 3
     (digest_file,) = config.digest_dir.glob("*.md")
     assert digest_file.read_text(encoding="utf-8") == digest  # the degraded digest is still saved
     assert shown_titles(config) == []
@@ -302,6 +305,241 @@ def test_disabled_sources_are_not_fetched(config, fake_web):
 
     assert [c.source for c in candidates] == ["Lab Blog"]
     assert failed == []
+
+
+# --- five stories by default
+
+
+def test_digest_has_exactly_five_stories_by_default(config, fake_web, model, fake_articles):
+    config.final_story_count = Config().final_story_count
+    model.selected = [3, 1, 2, 5, 4]
+
+    digest, model_ok = pipeline.run(config, now=NOW)
+
+    assert Config().final_story_count == 5
+    assert model_ok and digest.count("### ") == 5 and digest.count("**What happened:**") == 5
+    assert "GPT wrappers considered harmful" not in digest  # the sixth candidate is left for another day
+    assert len(shown_titles(config)) == 5
+
+
+def test_digest_is_topped_up_to_five_when_the_model_picks_fewer(config, fake_web, model, fake_articles):
+    config.final_story_count = 5
+    model.selected = [3, 1]  # the model stops at two
+
+    digest, _ = pipeline.run(config, now=NOW)
+
+    headings = [line for line in digest.splitlines() if line.startswith("### ")]
+    assert [heading.split("[")[1].split("]")[0] for heading in headings] == [
+        "Running LLMs on a laptop", "Model X released",  # the model's picks, in its order
+        "Sparse attention", "Dense attention", "An AI agent framework",  # then the top of the ranked shortlist
+    ]  # fmt: skip
+    assert digest.count("**What happened:**") == 5
+
+
+def test_digest_shows_what_exists_when_fewer_than_five_candidates_are_available(config, fake_web, model, fake_articles):
+    config.final_story_count = 5
+    fake_web[huggingface.API_URL] = []
+    fake_web[hackernews.API_URL] = {"hits": HN_BODY["hits"][:2]}  # two stories, one a duplicate of the feed post
+
+    digest, model_ok = pipeline.run(config, now=NOW)
+
+    assert model_ok and digest.count("### ") == 2
+    assert model.summary_requests == ["Model X released", "Running LLMs on a laptop"]  # no selection was needed
+
+
+# --- output files
+
+
+def read_latest(config):
+    return json.loads(config.latest_json_path.read_text(encoding="utf-8"))
+
+
+def dated_json(config, when):
+    return config.digest_dir / f"{when.astimezone().date()}.json"
+
+
+def test_latest_markdown_matches_the_dated_digest_and_stdout(config, fake_web, model, fake_articles):
+    digest, _ = pipeline.run(config, now=NOW)
+
+    dated = config.digest_dir / f"{NOW.astimezone().date()}.md"
+    assert dated.read_text(encoding="utf-8") == digest
+    assert config.latest_markdown_path.read_text(encoding="utf-8") == digest
+    assert config.latest_markdown_path == config.digest_dir.parent / "latest.md"
+    assert sorted(path.name for path in config.digest_dir.parent.iterdir()) == [
+        "dailygrad.db", "digests", "latest.json", "latest.md"
+    ]  # fmt: skip  (no temporary files are left behind)
+
+
+def test_latest_json_describes_the_same_digest(config, fake_web, model, fake_articles):
+    for number in range(3):
+        digest, _ = pipeline.run(config, now=day(number))
+
+    document = read_latest(config)
+    today = day(2).astimezone().date().isoformat()
+    assert document == {
+        "schema_version": 1,
+        "run_id": 3,
+        "date": today,
+        "generated_at": day(2).isoformat(timespec="seconds"),
+        "status": "ok",
+        "model": "qwen3.5:4b-q4_K_M",
+        "stories": [],  # the fixture news is two days old by now
+        "failed_sources": [],
+        "lesson": {
+            "topic_id": SCHEDULE[2].id,
+            "title": SCHEDULE[2].title,
+            "track": SCHEDULE[2].track,
+            "track_name": "Modern architectures, LLMs and inference",
+            "series": SCHEDULE[2].series,
+            "lesson": lesson_text(SCHEDULE[2].title),
+        },
+        "recall": {"topic_id": SCHEDULE[0].id, "question": SCHEDULE[0].question},
+    }
+    assert f"**{SCHEDULE[2].title}**" in digest
+
+
+def test_latest_json_stories_carry_ids_summaries_and_evidence(config, fake_web, model, fake_articles):
+    fake_articles["https://lab.example/model-x"] = requests.ConnectionError("connection reset")
+
+    pipeline.run(config, now=NOW)
+
+    document = read_latest(config)
+    assert document["status"] == "ok" and document["recall"] is None
+    assert document["stories"] == [
+        {
+            "id": "example.com/laptop",
+            "title": "Running LLMs on a laptop",
+            "source": "Hacker News",
+            "url": "https://example.com/laptop",
+            "what_happened": "Summary of Running LLMs on a laptop.",
+            "why_it_matters": "Running LLMs on a laptop matters.",
+            "evidence": "article",
+            "model_failed": False,
+        },
+        {  # its article could not be fetched: listed without a summary, which is not a model failure
+            "id": "lab.example/model-x",
+            "title": "Model X released",
+            "source": "Lab Blog",
+            "url": "https://lab.example/model-x",
+            "what_happened": None,
+            "why_it_matters": None,
+            "evidence": None,
+            "model_failed": False,
+        },
+        {
+            "id": "arxiv.org/abs/2610.00001",
+            "title": "Sparse attention",
+            "source": "Hugging Face Daily Papers",
+            "url": "https://arxiv.org/abs/2610.00001",
+            "what_happened": "Summary of Sparse attention.",
+            "why_it_matters": "Sparse attention matters.",
+            "evidence": "abstract",
+            "model_failed": False,
+        },
+    ]
+
+
+def test_latest_json_marks_a_degraded_run(config, fake_web, model, fake_articles):
+    model.failing_titles = {"Sparse attention"}
+    model.lesson_error = llm.LLMError("cannot reach Ollama")
+    fake_web[FEED.url] = b"<html>not a feed"
+
+    _, model_ok = pipeline.run(config, now=NOW)
+
+    document = read_latest(config)
+    assert not model_ok and document["status"] == "degraded"
+    assert document["lesson"] is None and document["recall"] is None
+    assert document["failed_sources"] == ["Lab Blog"]
+    failed = [story for story in document["stories"] if story["model_failed"]]
+    assert [story["title"] for story in failed] == ["Sparse attention"]
+    assert failed[0]["what_happened"] is None and failed[0]["evidence"] is None
+    assert sum(story["what_happened"] is not None for story in document["stories"]) == 2
+
+
+def test_only_a_failed_lesson_also_counts_as_degraded(config, fake_web, model, fake_articles):
+    model.lesson_error = llm.LLMError("cannot reach Ollama")
+
+    pipeline.run(config, now=NOW)
+
+    document = read_latest(config)
+    assert document["status"] == "degraded"
+    assert not any(story["model_failed"] for story in document["stories"])
+
+
+def test_latest_files_follow_the_most_recent_run(config, fake_web, model, fake_articles):
+    pipeline.run(config, now=day(0))
+    first_json = config.latest_json_path.read_bytes()
+    second, _ = pipeline.run(config, now=day(1))
+
+    assert config.latest_markdown_path.read_text(encoding="utf-8") == second
+    assert read_latest(config)["date"] == day(1).astimezone().date().isoformat()
+    assert len(list(config.digest_dir.glob("*.md"))) == 2  # the dated archive keeps both
+    # Each day's dated JSON is the document that was latest.json after that day's run.
+    assert dated_json(config, day(0)).read_bytes() == first_json
+    assert dated_json(config, day(1)).read_bytes() == config.latest_json_path.read_bytes()
+    assert sorted(path.name for path in config.digest_dir.iterdir()) == sorted(
+        f"{when.astimezone().date()}.{suffix}" for when in (day(0), day(1)) for suffix in ("json", "md")
+    )
+
+
+def test_run_id_is_the_database_run_and_grows_with_every_run(config, fake_web, model, fake_articles):
+    ids = []
+    for when in (day(0), day(0), day(1)):  # a same-day rerun is a new run too
+        pipeline.run(config, now=when)
+        ids.append(read_latest(config)["run_id"])
+
+    conn = sqlite3.connect(config.db_path)
+    recorded = [run_id for (run_id,) in conn.execute("SELECT id FROM runs ORDER BY id")]
+    conn.close()
+    assert ids == recorded == [1, 2, 3]
+    assert json.loads(dated_json(config, day(0)).read_text(encoding="utf-8"))["run_id"] == 2  # the day's last run
+
+
+def test_degraded_run_also_has_a_run_id_and_a_dated_json(config, fake_web, model, fake_articles):
+    model.error = llm.LLMError("cannot reach Ollama at http://localhost:11434")
+
+    pipeline.run(config, now=NOW)
+
+    document = read_latest(config)
+    assert (document["run_id"], document["status"]) == (1, "degraded")
+    assert dated_json(config, NOW).read_bytes() == config.latest_json_path.read_bytes()
+
+
+def test_a_run_is_not_recorded_if_its_files_cannot_be_written(config, fake_web, model, fake_articles, monkeypatch):
+    pipeline.run(config, now=day(0))
+    files = (config.latest_json_path, config.latest_markdown_path, dated_json(config, day(0)))
+    before = [path.read_bytes() for path in files]
+    disk = {"full": True}
+    real_fsync = os.fsync
+
+    def fsync(file_descriptor):
+        if disk["full"]:
+            raise OSError("disk full")
+        real_fsync(file_descriptor)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    with pytest.raises(OSError, match="disk full"):
+        pipeline.run(config, now=day(1))
+
+    assert table_count(config, "runs") == 1 and lesson_rows(config) == [SCHEDULE[0].id]  # the failed run left no trace
+    assert [path.read_bytes() for path in files] == before
+
+    disk["full"] = False
+    pipeline.run(config, now=day(1))
+    assert read_latest(config)["run_id"] == 2  # no digest ever named the run that was rolled back
+
+
+def test_a_crashed_run_leaves_the_previous_outputs_untouched(config, fake_web, fake_articles, ollama):
+    pipeline.run(config, now=day(0))
+    before = (config.latest_markdown_path.read_bytes(), config.latest_json_path.read_bytes())
+    ollama.lesson_crash = RuntimeError("unexpected crash while writing the lesson")
+
+    with pytest.raises(RuntimeError):
+        pipeline.run(config, now=day(1))
+
+    assert (config.latest_markdown_path.read_bytes(), config.latest_json_path.read_bytes()) == before
+    assert dated_json(config, day(0)).read_bytes() == before[1]  # the existing dated JSON is intact
+    assert not dated_json(config, day(1)).exists()  # and the crashed run wrote none
 
 
 # --- the micro-lesson
@@ -615,3 +853,46 @@ def test_cli_exits_non_zero_when_only_the_lesson_fails(tmp_path, fake_web, model
 def test_cli_reports_config_errors(tmp_path, capsys):
     assert cli.main(["run", "--config", str(tmp_path / "missing.toml")]) == 2
     assert "cannot read config file" in capsys.readouterr().err
+
+
+def test_cli_config_shows_where_files_go_and_what_will_be_used(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_file = tmp_path / "custom.toml"
+    config_file.write_text('data_dir = "out"\nfinal_story_count = 4\n[ollama]\nmodel = "llama3.2:3b"\n')
+
+    assert cli.main(["config", "--config", str(config_file)]) == 0
+
+    shown = capsys.readouterr().out
+    base = (tmp_path / "out").resolve()
+    for expected in (
+        f"Config file:        {config_file.resolve()}",
+        f"Database:           {base / 'dailygrad.db'}",
+        f"Dated digests:      {base / 'digests' / 'YYYY-MM-DD'}.md and .json",
+        f"Latest digest:      {base / 'latest.md'}",
+        f"Latest JSON:        {base / 'latest.json'}",
+        "Ollama endpoint:    http://localhost:11434",
+        "Ollama model:       llama3.2:3b",
+        "Stories per digest: 4, chosen from up to 18 candidates",
+        "Hugging Face Daily Papers, Hacker News",
+    ):
+        assert expected in shown
+    assert not (tmp_path / "out").exists()  # showing the settings creates nothing
+
+
+def test_cli_config_without_a_file_reports_the_defaults(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DAILYGRAD_CONFIG", raising=False)
+
+    assert cli.main(["config"]) == 0
+
+    shown = capsys.readouterr().out
+    assert "Config file:        none (built-in defaults)" in shown
+    assert "Stories per digest: 5, chosen from up to 18 candidates" in shown
+
+
+def test_cli_version(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["--version"])
+
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.startswith("dailygrad 0.")

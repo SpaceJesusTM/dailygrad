@@ -3,7 +3,7 @@ import pytest
 from conftest import NOW
 from dailygrad import db
 from dailygrad.config import Config
-from dailygrad.filtering import build_shortlist, dedupe, interleave, keyword_pattern
+from dailygrad.filtering import build_shortlist, dedupe, hacker_news_score, interleave, keyword_pattern
 from dailygrad.models import canonical_url, normalize_title
 
 
@@ -47,12 +47,61 @@ def test_recency(conn, make_candidate):
     assert build_shortlist([fresh, stale], Config(), conn, NOW) == [fresh]
 
 
-def test_hackernews_needs_points_and_keyword(conn, make_candidate):
-    good = make_candidate("New LLM released", score=50)
-    unpopular = make_candidate("Another LLM released", score=49)
-    off_topic = make_candidate("Show HN: my sourdough tracker", score=900)
+def hn_score(candidate, config=None, keywords=("AI", "LLM")):
+    return hacker_news_score(candidate, config or Config(), keyword_pattern(list(keywords)), NOW)
 
-    assert build_shortlist([good, unpopular, off_topic], Config(), conn, NOW) == [good]
+
+def test_hackernews_needs_points_but_not_a_keyword(conn, make_candidate):
+    on_topic = make_candidate("New LLM released", score=50)
+    unpopular = make_candidate("Another LLM released", score=49)
+    no_keyword = make_candidate("Show HN: a tiny inference engine in Rust", score=60)
+
+    # A title without a keyword is no longer dropped; it just ranks after the keyword match.
+    assert build_shortlist([no_keyword, unpopular, on_topic], Config(), conn, NOW) == [on_topic, no_keyword]
+
+
+def test_hacker_news_score_combines_popularity_freshness_and_keyword_boost(make_candidate):
+    plain = make_candidate("Shipping JPEG XL in Chrome", score=200, comments=100, age_hours=0)
+
+    assert hn_score(plain) == 250  # points + comments / 2, with no boost and full freshness
+    assert hn_score(make_candidate("Shipping an LLM in Chrome", score=200, comments=100, age_hours=0)) == 250 * 4
+    assert hn_score(make_candidate("Shipping JPEG XL in Chrome", score=200, comments=100, age_hours=24)) == 250 * 0.75
+    assert hn_score(make_candidate("Shipping JPEG XL in Chrome", score=200, comments=100, age_hours=48)) == 250 * 0.5
+    assert hn_score(make_candidate("Shipping JPEG XL in Chrome", score=200, comments=100, age_hours=500)) == 250 * 0.5
+
+
+def test_keyword_boost_is_configurable_and_needs_keywords(make_candidate):
+    story = make_candidate("A new LLM", score=100, age_hours=0)
+    config = Config()
+    config.hackernews.keyword_boost = 2.0
+
+    assert hn_score(story, config) == 200
+    assert hn_score(story, keywords=()) == 100  # an empty keyword list means no boost at all
+
+
+def test_keyword_stories_outrank_more_popular_generic_ones_up_to_the_boost(conn, make_candidate):
+    ai = make_candidate("New LLM released", score=120)
+    generic = make_candidate("Visa and Mastercard face new litigation", score=400)
+    huge = make_candidate("A very big story about something else", score=900)
+
+    # 120 x 4 = 480: ahead of the 400-point generic story, behind the 900-point one.
+    assert build_shortlist([generic, ai, huge], Config(), conn, NOW) == [huge, ai, generic]
+
+
+def test_weak_generic_stories_do_not_take_shortlist_places_from_ai_stories(conn, make_candidate):
+    config = Config()
+    ai = [make_candidate(f"LLM paper club {n}", score=100 + n) for n in range(6)]
+    generic = [make_candidate(f"Show HN: my sourdough tracker {n}", score=300 + n) for n in range(10)]
+    papers = [make_candidate(f"paper {n}", kind="huggingface", score=50 + n) for n in range(10)]
+    posts = [make_candidate(f"post {n}", kind="rss", source="Lab", score=0, age_hours=n + 1) for n in range(10)]
+
+    shortlist = build_shortlist(generic + ai + papers + posts, config, conn, NOW)
+
+    assert len(shortlist) == config.filter.shortlist_size == 18
+    # Each source keeps a third of the shortlist, however many candidates it has.
+    assert [sum(c.kind == kind for c in shortlist) for kind in ("hackernews", "huggingface", "rss")] == [6, 6, 6]
+    # All six Hacker News places go to the keyword stories, although the generic ones have three times the points.
+    assert {c.title for c in shortlist if c.kind == "hackernews"} == {c.title for c in ai}
 
 
 def test_huggingface_needs_upvotes_but_not_keywords(conn, make_candidate):
@@ -101,7 +150,7 @@ def test_interleave_balances_sources_and_ranks_within_each(make_candidate):
     papers = [make_candidate(f"paper {score}", kind="huggingface", score=score) for score in (7, 90)]
     posts = [make_candidate(f"post {age}", kind="rss", score=0, age_hours=age) for age in (5, 1)]
 
-    shortlist = interleave(hn + papers + posts, size=5)
+    shortlist = interleave(hn + papers + posts, size=5, rank=lambda c: c.score)
 
     assert [c.title for c in shortlist] == ["hn 300", "paper 90", "post 1", "hn 200", "paper 7"]
 
@@ -110,5 +159,16 @@ def test_interleave_fills_from_remaining_sources(make_candidate):
     hn = [make_candidate(f"hn {score}", score=score) for score in (4, 3, 2, 1)]
     post = make_candidate("only post", kind="rss")
 
-    assert len(interleave(hn + [post], size=4)) == 4
-    assert len(interleave(hn + [post], size=20)) == 5
+    assert len(interleave(hn + [post], size=4, rank=lambda c: c.score)) == 4
+    assert len(interleave(hn + [post], size=20, rank=lambda c: c.score)) == 5
+
+
+def test_hacker_news_cannot_dominate_the_shortlist_by_volume(conn, make_candidate):
+    hn = [make_candidate(f"LLM story {n}", score=500 + n) for n in range(30)]
+    papers = [make_candidate(f"paper {n}", kind="huggingface", score=10) for n in range(3)]
+    posts = [make_candidate(f"post {n}", kind="rss", source="Lab", score=0) for n in range(2)]
+
+    shortlist = build_shortlist(hn + papers + posts, Config(), conn, NOW)
+
+    assert all(c in shortlist for c in papers + posts)  # every paper and post is in, despite 30 HN stories
+    assert {c.kind for c in shortlist[:3]} == {"hackernews", "huggingface", "rss"}  # and the sources take turns
