@@ -9,7 +9,7 @@ import pytest
 import requests
 
 from conftest import NOW
-from dailygrad import articles, cli, lessons, llm, pipeline, stories, web
+from dailygrad import articles, cli, history, lessons, llm, pipeline, stories, web
 from dailygrad.config import Config, Feed
 from dailygrad.curriculum import build_schedule, load_curriculum
 from dailygrad.sources import available_sources, hackernews, huggingface
@@ -482,9 +482,40 @@ def test_latest_files_follow_the_most_recent_run(config, fake_web, model, fake_a
     # Each day's dated JSON is the document that was latest.json after that day's run.
     assert dated_json(config, day(0)).read_bytes() == first_json
     assert dated_json(config, day(1)).read_bytes() == config.latest_json_path.read_bytes()
-    assert sorted(path.name for path in config.digest_dir.iterdir()) == sorted(
+    assert sorted(path.name for path in config.digest_dir.glob("*.*")) == sorted(
         f"{when.astimezone().date()}.{suffix}" for when in (day(0), day(1)) for suffix in ("json", "md")
     )
+
+
+def test_every_run_keeps_its_own_archive_even_on_the_same_day(config, fake_web, model, fake_articles):
+    kept = []
+    for when in (day(0), day(0) + timedelta(hours=1), day(1)):  # the second replaces the first's dated files
+        digest, _ = pipeline.run(config, now=when)
+        kept.append((digest, config.latest_json_path.read_bytes()))
+
+    runs = history.archived_runs(config)
+    assert [run["run_id"] for run in runs] == [1, 2, 3]
+    for run, (digest, latest_json) in zip(runs, kept):
+        assert open(run["json"], "rb").read() == latest_json  # what latest.json held right after that run
+        assert open(run["markdown"], encoding="utf-8").read() == digest
+    assert history.unarchived_runs(config, runs) == []  # every recorded run has its archive
+
+
+def test_a_run_that_is_rolled_back_leaves_no_archive(config, fake_web, model, fake_articles, monkeypatch):
+    pipeline.run(config, now=day(0))
+    real_replace = os.replace
+
+    def failing_replace(source, target):
+        if str(target).endswith("latest.json"):
+            raise OSError("cannot replace latest.json")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(OSError, match="cannot replace"):
+        pipeline.run(config, now=day(1))
+
+    assert table_count(config, "runs") == 1
+    assert [run["run_id"] for run in history.archived_runs(config)] == [1]
 
 
 def test_run_id_is_the_database_run_and_grows_with_every_run(config, fake_web, model, fake_articles):
@@ -873,6 +904,7 @@ def test_cli_config_shows_where_files_go_and_what_will_be_used(tmp_path, capsys,
         f"Config file:        {config_file.resolve()}",
         f"Database:           {base / 'dailygrad.db'}",
         f"Dated digests:      {base / 'digests' / 'YYYY-MM-DD'}.md and .json",
+        f"Run archives:       {base / 'digests' / 'runs' / 'YYYY-MM-DD' / 'run-ID-TIME'}.md and .json",
         f"Latest digest:      {base / 'latest.md'}",
         f"Latest JSON:        {base / 'latest.json'}",
         "Ollama endpoint:    http://localhost:11434",

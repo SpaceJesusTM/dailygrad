@@ -1,4 +1,4 @@
-"""The digest's output files: the dated Markdown and JSON archives, latest.md and latest.json.
+"""The digest's output files: each run's archive, the dated Markdown and JSON, latest.md and latest.json.
 
 Together with stdout and the exit code, these files are DailyGrad's public interface.
 The JSON layout is documented in docs/output.md; change SCHEMA_VERSION if it changes
@@ -10,6 +10,7 @@ import os
 from datetime import date, datetime
 from pathlib import Path
 
+from dailygrad import history
 from dailygrad.config import Config
 from dailygrad.curriculum import TRACKS
 from dailygrad.models import Lesson, Story
@@ -83,13 +84,23 @@ def dated_markdown_path(config: Config, day: date) -> Path:
 
 
 def write_outputs(config: Config, day: date, markdown: str, document: dict) -> None:
-    """Write the dated Markdown and JSON, then latest.md and latest.json with the same contents."""
+    """Archive the run, then write the dated Markdown and JSON, then latest.md and latest.json, all the same.
+
+    The archive comes first, so latest.json never names a run that has no archive. The dated
+    and latest files are replaced; the archive is created once (see history.py) and stays.
+    """
     json_text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
-    dated_path = dated_markdown_path(config, day)
-    write_atomic(dated_path, markdown)
-    write_atomic(dated_path.with_suffix(".json"), json_text)
-    write_atomic(config.latest_markdown_path, markdown)
-    write_atomic(config.latest_json_path, json_text)
+    history.preserve_latest(config)  # the digest about to be replaced, if it predates the archives
+    archived = history.archive_run(config, markdown, json_text)
+    try:
+        dated_path = dated_markdown_path(config, day)
+        write_atomic(dated_path, markdown)
+        write_atomic(dated_path.with_suffix(".json"), json_text)
+        write_atomic(config.latest_markdown_path, markdown)
+        write_atomic(config.latest_json_path, json_text)
+    except BaseException:
+        history.discard(archived)  # the run is rolled back, so no archive may name it
+        raise
 
 
 def write_atomic(path: Path, text: str) -> None:

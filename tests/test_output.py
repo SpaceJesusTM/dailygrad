@@ -93,7 +93,7 @@ def test_write_outputs_writes_dated_and_latest_files_with_utf8_json(tmp_path, ma
 
     dated = tmp_path / "data" / "digests" / "2026-10-07.md"
     assert output.dated_markdown_path(config, DAY) == dated
-    assert sorted(path.name for path in dated.parent.iterdir()) == ["2026-10-07.json", "2026-10-07.md"]
+    assert sorted(path.name for path in dated.parent.iterdir()) == ["2026-10-07.json", "2026-10-07.md", "runs"]
     assert dated.read_text(encoding="utf-8") == config.latest_markdown_path.read_text(encoding="utf-8") == "# Digest\n"
     raw = config.latest_json_path.read_bytes()
     assert dated.with_suffix(".json").read_bytes() == raw  # the dated JSON and latest.json are the same document

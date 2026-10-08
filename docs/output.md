@@ -7,13 +7,18 @@ the SQLite database.
 `dailygrad sources`, which chooses the news sources, has its own JSON output and exit
 codes. They are described in [sources.md](sources.md).
 
+`dailygrad history` lists and prints the archived digest of every run. It is described
+under [Run archives](#run-archives).
+
 ## What a run produces
 
 | Output | Where | Content |
 |---|---|---|
 | Standard output | stdout | The digest as Markdown. Log messages go to stderr. |
-| Dated digest | `<data_dir>/digests/YYYY-MM-DD.md` | The same Markdown, kept as an archive. |
-| Dated data | `<data_dir>/digests/YYYY-MM-DD.json` | The digest as structured data, kept as an archive. |
+| Run archive | `<data_dir>/digests/runs/YYYY-MM-DD/run-ID-TIME.md` | The same Markdown, kept for this run and never replaced. |
+| Run archive data | `<data_dir>/digests/runs/YYYY-MM-DD/run-ID-TIME.json` | The digest as structured data, kept for this run and never replaced. |
+| Dated digest | `<data_dir>/digests/YYYY-MM-DD.md` | The same Markdown: the day's last run. |
+| Dated data | `<data_dir>/digests/YYYY-MM-DD.json` | The digest as structured data: the day's last run. |
 | Latest digest | `<data_dir>/latest.md` | The same Markdown, always the most recent run. |
 | Latest data | `<data_dir>/latest.json` | The same JSON document as that run's dated JSON file, byte for byte. |
 
@@ -22,16 +27,106 @@ file exists but is invalid, the run stops with exit code 2: see [sources.md](sou
 
 `data_dir` is `data` by default. `dailygrad config` prints the absolute paths in use.
 
-All four files are written whenever a run produces a digest, including a degraded run.
+All six files are written whenever a run produces a digest, including a degraded run.
 They are not written when a run crashes or the configuration or source preferences are invalid; the files from
 earlier runs are then left untouched.
 
-Each file is written to a temporary file in the same directory and then renamed over the
-old one, so a reader never sees a partly written file.
+Each file is written to a temporary file in the same directory and then moved into place,
+so a reader never sees a partly written file. The run archive is written first and
+`latest.json` last, so the run that `latest.json` names always has its archive.
 
 The date in the file name and in `date` is the local calendar date of the run. A second
 run on the same day replaces that day's dated Markdown and JSON, so the dated files hold
-the last run of each day.
+the last run of each day. The run archives hold every run.
+
+## Run archives
+
+Every run that writes a digest also archives it, in files of its own:
+
+```
+<data_dir>/digests/runs/2026-10-08/run-2-20261008T124012Z.json
+<data_dir>/digests/runs/2026-10-08/run-2-20261008T124012Z.md
+<data_dir>/digests/runs/2026-10-08/run-3-20261008T190507Z.json
+<data_dir>/digests/runs/2026-10-08/run-3-20261008T190507Z.md
+```
+
+The directory is the digest's `date`. The file name is `run-`, the `run_id`, and
+`generated_at` in UTC written `YYYYMMDDTHHMMSSZ`. The JSON file is the document that was
+`latest.json` right after that run, byte for byte, and the Markdown is what was `latest.md`.
+
+- **An archive is created once and never written again.** A later run, on the same day or
+  any other, adds its own files and leaves the earlier ones alone. If a file of that name
+  already exists with other content, DailyGrad refuses to replace it.
+- **The name is the run's identity.** `run_id` starts again at 1 if the database is deleted,
+  so the name also carries `generated_at`: two different runs never share a name. A consumer
+  should identify a run by `run_id` and `generated_at` together, and may check that a file's
+  name matches the document inside it.
+- **A run that is not recorded has no archive.** If writing the outputs fails, the run is
+  rolled back and its archive is removed again.
+- The Markdown file is written before the JSON file, so a JSON archive means the pair is
+  complete. An archive made by a backfill can lack the Markdown file (see below).
+
+### Listing and reading archived runs
+
+```sh
+dailygrad history                      # every archived run, oldest first
+dailygrad history --date 2026-10-08    # the runs of one day
+dailygrad history --json               # the same, as JSON
+dailygrad history show 2               # run 2's JSON document, exactly as archived
+dailygrad history show 2 --markdown    # its Markdown digest
+dailygrad history show 2 --date 2026-10-08
+```
+
+`dailygrad history --json` prints:
+
+```json
+{
+  "ok": true,
+  "runs": [
+    {
+      "run_id": 2,
+      "date": "2026-10-08",
+      "generated_at": "2026-10-08T12:40:12+00:00",
+      "status": "ok",
+      "story_count": 5,
+      "has_lesson": true,
+      "json": "/home/you/dailygrad/data/digests/runs/2026-10-08/run-2-20261008T124012Z.json",
+      "markdown": "/home/you/dailygrad/data/digests/runs/2026-10-08/run-2-20261008T124012Z.md"
+    }
+  ],
+  "not_archived": [
+    {"run_id": 1, "date": "2026-10-07", "recorded_at": "2026-10-07T12:31:02.118394+00:00"}
+  ]
+}
+```
+
+`runs` is read from the archive files, oldest first; a file whose name does not match the
+run inside it is left out, with a warning on stderr. `markdown` is `null` for an archive
+without a Markdown file. `not_archived` lists runs that the database records but that have
+no archive: their digests were replaced by a later run before archives existed, and cannot
+be listed or shown. Listing only reads; it creates no file and does not change the database.
+
+`history` exits with 0 on success, with 2 if the request is refused, and with 1 if a file
+could not be read. With `--json`, a refusal prints `{"ok": false, "error": {"code": …,
+"message": …}}`. The codes are `not_found` (no archived run with that ID), `ambiguous_run`
+(the ID was used twice, after a database reset; the message names the files), `no_markdown`,
+`bad_date` and `invalid_config`.
+
+### Digests written before archives existed
+
+Earlier versions kept only the last run of each day. What is still on disk can be archived:
+
+```sh
+dailygrad history backfill
+```
+
+This archives `latest.json` and each `digests/YYYY-MM-DD.json` that has no archive yet,
+byte for byte, with its Markdown file when that is the same digest. It changes no existing
+file and can be repeated. A run whose files were already replaced by a later run is gone:
+nothing is reconstructed for it, and it stays in `not_archived`.
+
+A run does the same for `latest.json` before replacing it, so the first run after an
+upgrade preserves the digest it follows without anyone running the backfill.
 
 ## Exit codes
 

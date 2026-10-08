@@ -21,6 +21,19 @@ def render_digest(day: date, stories: list[Story], failed_sources: list[str], le
     return "\n".join(lines)
 
 
+def describes(markdown: str, document: dict) -> bool:
+    """True if `markdown` is the rendering of the digest in `document`, judged by its date and story links."""
+    stories = document.get("stories", [])
+    return (
+        markdown.startswith(f"# DailyGrad — {document.get('date')}\n")
+        and f"### {len(stories) + 1}. " not in markdown
+        and all(
+            f"### {number}. " in markdown and f"]({_link_target(str(story.get('url')))})" in markdown
+            for number, story in enumerate(stories, start=1)
+        )
+    )
+
+
 def _lesson_lines(lesson: Lesson | None) -> list[str]:
     lines = ["## AI Micro-Lesson", ""]
     if lesson is None:

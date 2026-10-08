@@ -90,6 +90,10 @@ class Config:
         return Path(self.data_dir).expanduser() / "digests"
 
     @property
+    def run_archive_dir(self) -> Path:
+        return self.digest_dir / "runs"
+
+    @property
     def latest_markdown_path(self) -> Path:
         return Path(self.data_dir).expanduser() / "latest.md"
 

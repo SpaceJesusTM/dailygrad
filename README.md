@@ -205,8 +205,9 @@ rather than renaming them.
 | Output | Content |
 |---|---|
 | stdout | The digest as Markdown. Logs go to stderr. |
-| `data/digests/YYYY-MM-DD.md` | The same digest, kept as an archive. |
-| `data/digests/YYYY-MM-DD.json` | The digest as structured data, kept as an archive. |
+| `data/digests/runs/YYYY-MM-DD/run-ID-TIME.md` and `.json` | This run's digest, archived once and never replaced. |
+| `data/digests/YYYY-MM-DD.md` | The same digest: the day's last run. |
+| `data/digests/YYYY-MM-DD.json` | The digest as structured data: the day's last run. |
 | `data/latest.md` | The most recent digest. |
 | `data/latest.json` | The most recent digest as structured data: the same document as its dated JSON. |
 | `data/dailygrad.db` | SQLite history, used to avoid repeats and to track the curriculum. |
@@ -273,6 +274,7 @@ dailygrad config
 Config file:        none (built-in defaults)
 Database:           /home/you/dailygrad/data/dailygrad.db
 Dated digests:      /home/you/dailygrad/data/digests/YYYY-MM-DD.md and .json
+Run archives:       /home/you/dailygrad/data/digests/runs/YYYY-MM-DD/run-ID-TIME.md and .json
 Latest digest:      /home/you/dailygrad/data/latest.md
 Latest JSON:        /home/you/dailygrad/data/latest.json
 Ollama endpoint:    http://localhost:11434
@@ -370,7 +372,10 @@ Known limits:
 
 - Some sites refuse automated requests (openai.com does), so their stories usually appear
   as headlines without a summary.
-- A second run on the same day replaces that day's dated digest.
+- A second run on the same day replaces that day's dated digest. Every run's own digest
+  stays in `data/digests/runs/`: `dailygrad history` lists them and `dailygrad history show
+  RUN_ID` prints one. Runs made before this existed are kept only if their files were still
+  on disk (`dailygrad history backfill`).
 
 ## Acknowledgements
 

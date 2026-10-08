@@ -1,12 +1,13 @@
-"""Command-line interface: `dailygrad run`, `dailygrad config` and `dailygrad sources`."""
+"""Command-line interface: `dailygrad run`, `dailygrad config`, `dailygrad sources` and `dailygrad history`."""
 
 import argparse
 import json
 import logging
 import sys
+from datetime import date
 from pathlib import Path
 
-from dailygrad import __version__, pipeline, preferences
+from dailygrad import __version__, history, pipeline, preferences
 from dailygrad.config import CONFIG_ENV_VAR, DEFAULT_CONFIG_FILE, Config, ConfigError, find_config_file, load_config
 from dailygrad.sources import ALL, available_sources
 
@@ -26,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("run", parents=[config_option], help="fetch news, write today's digest and print it")
     commands.add_parser("config", parents=[config_option], help="show the settings a run would use, and where files go")
     add_sources_command(commands, config_option)
+    add_history_command(commands, config_option)
     args = parser.parse_args(argv)
     config_path = getattr(args, "config", None)
 
@@ -36,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(config_path)
         available_sources(config)  # rejects feed names that cannot be told apart
     except ConfigError as exc:
-        if args.command == "sources" and getattr(args, "json", False):
+        if args.command in ("sources", "history") and getattr(args, "json", False):
             print(json.dumps({"ok": False, "error": {"code": "invalid_config", "message": str(exc)}}, indent=2))
         print(f"dailygrad: {exc}", file=sys.stderr)
         return 2
@@ -46,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "sources":
         return sources_command(config, args.action or "list", getattr(args, "names", []), getattr(args, "json", False))
+    if args.command == "history":
+        return history_command(config, args)
 
     try:
         digest, model_ok = pipeline.run(config)
@@ -67,6 +71,7 @@ def describe(config: Config, config_file: Path | None) -> str:
         ("Config file", config_file.resolve() if config_file else "none (built-in defaults)"),
         ("Database", config.db_path.resolve()),
         ("Dated digests", f"{config.digest_dir.resolve() / 'YYYY-MM-DD'}.md and .json"),
+        ("Run archives", f"{config.run_archive_dir.resolve() / 'YYYY-MM-DD' / 'run-ID-TIME'}.md and .json"),
         ("Latest digest", config.latest_markdown_path.resolve()),
         ("Latest JSON", config.latest_json_path.resolve()),
         ("Ollama endpoint", config.ollama.url),
@@ -124,6 +129,115 @@ def sources_command(config: Config, action: str, names: list[str], as_json: bool
         else:
             print("Nothing to change.")
     return 0
+
+
+def add_history_command(commands, config_option: argparse.ArgumentParser) -> None:
+    json_option = argparse.ArgumentParser(add_help=False)
+    json_option.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="print the result as JSON, for another program"
+    )
+    date_option = argparse.ArgumentParser(add_help=False)
+    date_option.add_argument(
+        "--date", default=argparse.SUPPRESS, metavar="YYYY-MM-DD", help="only the runs of this day"
+    )
+    listing = [config_option, json_option, date_option]
+    command = commands.add_parser(
+        "history",
+        parents=listing,
+        help="list, show or backfill the archived digest of every run",
+        description="Every run's digest is archived once and never replaced, so a second run on the same "
+        "day does not lose the first. List the archived runs, print one, or archive digests written before "
+        "archives existed.",
+    )
+    actions = command.add_subparsers(dest="action")
+    actions.add_parser("list", parents=listing, help="list the archived runs, oldest first (the default)")
+    show = actions.add_parser("show", parents=[config_option, date_option], help="print one archived run's digest")
+    show.add_argument("run_id", type=int, metavar="RUN_ID")
+    show.add_argument("--markdown", action="store_true", help="print the Markdown digest instead of the JSON document")
+    actions.add_parser(
+        "backfill",
+        parents=[config_option, json_option],
+        help="archive latest.* and the dated digests that have no archive yet; nothing is invented",
+    )
+
+
+def history_command(config: Config, args: argparse.Namespace) -> int:
+    """List archived runs, print one, or backfill. Exits with 2 if the request is refused, 1 if a file failed."""
+    action, as_json, day = args.action or "list", getattr(args, "json", False), getattr(args, "date", None)
+    try:
+        if day is not None and (len(day) != 10 or date.fromisoformat(day).isoformat() != day):
+            raise ValueError
+    except ValueError:
+        return _history_refused(history.HistoryError("bad_date", f"--date must be YYYY-MM-DD, got {day!r}"), as_json)
+
+    try:
+        if action == "show":
+            run = history.find_run(config, args.run_id, day)
+            if args.markdown and not run["markdown"]:
+                raise history.HistoryError("no_markdown", f"run {args.run_id} was archived without its Markdown")
+            print(Path(run["markdown" if args.markdown else "json"]).read_text(encoding="utf-8"), end="")
+            return 0
+        if action == "backfill":
+            results = history.backfill(config)
+            if as_json:
+                print(json.dumps({"ok": True, "results": results}, indent=2))
+            else:
+                print(backfill_report(results))
+            return 0
+        runs = history.archived_runs(config, day)
+        missing = history.unarchived_runs(config, runs, day)
+    except history.HistoryError as exc:
+        return _history_refused(exc, as_json)
+    except OSError as exc:
+        if as_json:
+            print(json.dumps({"ok": False, "error": {"code": "read_failed", "message": str(exc)}}, indent=2))
+        print(f"dailygrad: {exc}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(json.dumps({"ok": True, "runs": runs, "not_archived": missing}, indent=2))
+    else:
+        print(history_table(runs, missing))
+    return 0
+
+
+def _history_refused(exc: history.HistoryError, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps({"ok": False, "error": {"code": exc.code, "message": str(exc)}}, indent=2))
+    print(f"dailygrad: {exc}", file=sys.stderr)
+    return 2
+
+
+def history_table(runs: list[dict], missing: list[dict]) -> str:
+    lines = []
+    if runs:
+        rows = [("Date", "Run", "Generated", "Status", "Stories", "Lesson")]
+        for run in runs:
+            lesson = "yes" if run["has_lesson"] else "no"
+            stories, status = str(run["story_count"]), str(run["status"])
+            rows.append((run["date"], str(run["run_id"]), run["generated_at"], status, stories, lesson))
+        widths = [max(len(row[column]) for row in rows) for column in range(5)]
+        lines += ["  ".join([*(cell.ljust(width) for cell, width in zip(row, widths)), row[5]]) for row in rows]
+    else:
+        lines.append("No archived runs.")
+    if missing:
+        ids = ", ".join(f"{run['run_id']} ({run['date']})" for run in missing)
+        lines += ["", f"Recorded in the database but not archived, so their digests are not available: {ids}"]
+    return "\n".join(lines)
+
+
+def backfill_report(results: list[dict]) -> str:
+    if not results:
+        return "No digest files to archive."
+    lines = []
+    for result in results:
+        if result["outcome"] == "skipped":
+            lines.append(f"skipped   {result['source']}: {result['reason']}")
+            continue
+        note = "" if result["markdown"] else " (JSON only: no matching Markdown)"
+        label = "archived " if result["outcome"] == "archived" else "already   "
+        lines.append(f"{label} run {result['run_id']} of {result['date']}{note}")
+    return "\n".join(lines)
 
 
 def sources_table(result: dict) -> str:

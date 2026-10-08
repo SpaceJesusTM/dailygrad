@@ -68,6 +68,19 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def recorded_runs(path: Path) -> list[tuple[int, str, str]]:
+    """Every run as (id, run date, created at), oldest first, read without creating or changing the database."""
+    if not path.is_file():
+        return []
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        return conn.execute("SELECT id, run_date, created_at FROM runs ORDER BY id").fetchall()
+    except sqlite3.OperationalError:  # no runs table: a database that has never held a run
+        return []
+    finally:
+        conn.close()
+
+
 def was_shown(conn: sqlite3.Connection, candidate: Candidate) -> bool:
     row = conn.execute(
         "SELECT 1 FROM items WHERE shown_run_id IS NOT NULL AND (url_key = ? OR title_key = ?) LIMIT 1",
