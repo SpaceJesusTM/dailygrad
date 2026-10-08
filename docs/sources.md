@@ -62,12 +62,40 @@ Limits worth knowing:
 - `meta-ai-research` publishes about once a month, so it rarely has anything inside the
   48-hour window. `nvidia-developer-blog` publishes several posts a day, many of them
   product tutorials.
-- The RSS feeds have no popularity signal and share the RSS places in the shortlist,
-  newest first. No publisher is ranked above another; the model chooses the five stories
-  from the shortlist as before.
+- The RSS feeds have no popularity signal, so they are balanced by turn-taking: see
+  [How feeds share the shortlist](#how-feeds-share-the-shortlist). No publisher is ranked
+  above another.
 - Defining `[[rss.feeds]]` in your config replaces the whole built-in list. A config
   written before a feed was added does not gain it: copy the entry from
   `config.example.toml`. For the Anthropic feed, copy its `link_hosts` line too.
+
+### How feeds share the shortlist
+
+The model chooses the digest's five stories from a shortlist of at most 25 candidates: up
+to 15 feed posts, 4 Hugging Face Daily Papers and 6 Hacker News stories. The Hugging Face
+Blog is a feed and counts among the 15.
+
+The 15 feed places are filled in rounds, from posts that are within 48 hours and not
+already shown:
+
+1. the newest post of every feed, newest first;
+2. the second newest post of every feed, newest first;
+3. the third newest post of every feed, newest first;
+
+stopping as soon as 15 are chosen. So one feed has at most 3 places, and with all nine
+feeds active each has one place before any has two. Posts published at the same moment are
+ordered by feed name and then URL, so the result does not depend on the order of the feeds.
+
+Nothing is forced. A feed that is disabled, unavailable or has no recent post takes no
+place, and the places it leaves go to the next posts in the rounds, still at most 3 a feed.
+If the feeds have fewer than 15 eligible posts between them, the remaining places stay
+empty: they are not filled with older or already shown posts, and they do not go to the
+papers or to Hacker News. The same holds the other way round.
+
+The limits are settings: `max_candidates` and `max_per_feed` under `[rss]`,
+`max_candidates` under `[huggingface]` and `[hackernews]`, and `shortlist_size` under
+`[filter]` as the overall limit. A config that sets `shortlist_size` below 25 keeps that
+total: the three kinds then take turns until it is reached.
 
 ### Feeds added in an update
 

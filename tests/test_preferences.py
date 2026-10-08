@@ -14,10 +14,10 @@ import pytest
 import requests
 
 from conftest import NOW
-from dailygrad import articles, cli, output, pipeline, preferences
+from dailygrad import articles, cli, db, llm, output, pipeline, preferences, stories
 from dailygrad.config import Config, ConfigError, Feed
 from dailygrad.sources import available_sources, hackernews, huggingface, source_id
-from test_pipeline import FEED, HN_BODY, fake_articles, fake_web, model, read_latest  # noqa: F401 (fixtures)
+from test_pipeline import ABSTRACT, FEED, HN_BODY, fake_articles, fake_web, hn_hit, model, read_latest  # noqa: F401 (fixtures)
 
 NEW_IDS = ["anthropic-news", "meta-ai-research", "nvidia-developer-blog", "mistral-ai-news", "microsoft-research"]
 LABS = ["openai", "google-deepmind", "google-research", *NEW_IDS]
@@ -742,3 +742,62 @@ def test_a_run_with_every_built_in_source_still_gives_five_stories(tmp_path, fak
     conn.close()
     assert not any("old post" in title for title in seen)  # the freshness filter applies to the new feeds
     assert seen.count("Model X released") == 1  # the feed entry and the Hacker News link are one story
+
+
+# --- the shortlist the model chooses from
+
+
+def test_the_model_chooses_five_from_at_most_25_balanced_candidates(tmp_path, fake_web, model, fake_articles, monkeypatch):
+    """Every source has more than its share. Preferences and a story-memory reset work on top of the allocation."""
+    config = Config(data_dir=str(tmp_path / "data"))
+    for feed in config.rss.feeds:
+        slug = source_id(feed.name)
+        fake_web[feed.url] = feed_body(*[(f"{feed.name} post {n}", f"https://{slug}.example/{n}", n + 1) for n in range(6)])
+    monkeypatch.setattr(articles, "download", lambda url, content_types: fake_web[url])  # the Anthropic feed
+    fake_web[huggingface.API_URL] = [
+        {"paper": {"id": f"2610.{n:05}", "title": f"Paper {n}", "upvotes": 10 + n, "summary": ABSTRACT,
+                   "submittedOnDailyAt": "2026-10-07T00:00:00.000Z"}}
+        for n in range(10)
+    ]  # fmt: skip
+    fake_web[hackernews.API_URL] = {"hits": [hn_hit(n, f"LLM story {n}", f"https://hn.example/{n}", 100 + n) for n in range(12)]}
+
+    offered = []
+
+    def chat_json(ollama, system, prompt, schema, temperature=None):
+        if schema is stories.SELECTION_SCHEMA:
+            offered.append([line for line in prompt.splitlines() if line[:1].isdigit()])
+        return model.chat_json(ollama, system, prompt, schema, temperature)
+
+    monkeypatch.setattr(llm, "chat_json", chat_json)
+    model.selected = [25, 1, 2, 3, 4]
+
+    def count(lines, text):
+        return sum(text in line for line in lines)
+
+    pipeline.run(config, now=NOW)
+
+    (candidates,) = offered
+    assert len(candidates) == 25
+    assert (count(candidates, "(Hugging Face Daily Papers, "), count(candidates, "(Hacker News, ")) == (4, 6)
+    assert all(count(candidates, f"({feed.name})") <= 3 for feed in config.rss.feeds)
+    assert count(candidates, "(NVIDIA Developer Blog)") == 2  # nine feeds, fifteen places: one each, then the six newest
+    document = read_latest(config)
+    assert len(document["stories"]) == 5 and document["status"] == "ok"
+    first_titles = [story["title"] for story in document["stories"]]
+
+    # A disabled feed gives up its places; they go to other feeds, never beyond the feed limit.
+    preferences.change(config, "disable", ["nvidia-developer-blog", "hacker-news"])
+    pipeline.run(config, now=NOW)
+    candidates = offered[-1]
+    assert count(candidates, "(NVIDIA Developer Blog)") == 0 and count(candidates, "(Hacker News, ") == 0
+    assert len(candidates) == 19 and count(candidates, "(Hugging Face Daily Papers, ") == 4
+    assert not any(title in line for title in first_titles for line in candidates)  # shown stories are not offered again
+
+    # After a story-memory reset the first run's stories are eligible again, under the same limits.
+    preferences.change(config, "set", ["all"])
+    conn = db.connect(config.db_path)
+    with conn:
+        db.reset_story_memory(conn, NOW)
+    conn.close()
+    pipeline.run(config, now=NOW)
+    assert len(offered[-1]) == 25 and offered[-1] == offered[0]

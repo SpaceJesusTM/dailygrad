@@ -1068,7 +1068,7 @@ def test_cli_config_shows_where_files_go_and_what_will_be_used(tmp_path, capsys,
         f"Latest JSON:        {base / 'latest.json'}",
         "Ollama endpoint:    http://localhost:11434",
         "Ollama model:       llama3.2:3b",
-        "Stories per digest: 4, chosen from up to 18 candidates",
+        "Stories per digest: 4, chosen from up to 25 candidates",
         "Hugging Face Daily Papers, Hacker News",
     ):
         assert expected in shown
@@ -1083,7 +1083,7 @@ def test_cli_config_without_a_file_reports_the_defaults(tmp_path, capsys, monkey
 
     shown = capsys.readouterr().out
     assert "Config file:        none (built-in defaults)" in shown
-    assert "Stories per digest: 5, chosen from up to 18 candidates" in shown
+    assert "Stories per digest: 5, chosen from up to 25 candidates" in shown
 
 
 def test_cli_version(capsys):

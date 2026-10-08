@@ -52,7 +52,7 @@ DEFAULT_FEEDS = [
 @dataclass
 class FilterConfig:
     max_age_hours: int = 48
-    shortlist_size: int = 18
+    shortlist_size: int = 25  # overall limit; the per-source max_candidates below add up to it
     keywords: list[str] = field(default_factory=lambda: list(DEFAULT_KEYWORDS))
 
 
@@ -60,6 +60,7 @@ class FilterConfig:
 class HackerNewsConfig:
     enabled: bool = True
     min_points: int = 50
+    max_candidates: int = 6  # places in the shortlist, at most
     keyword_boost: float = 4.0  # a title matching a keyword ranks as if it were this many times as popular
 
 
@@ -67,11 +68,14 @@ class HackerNewsConfig:
 class HuggingFaceConfig:
     enabled: bool = True
     min_upvotes: int = 5
+    max_candidates: int = 4  # places in the shortlist, at most
 
 
 @dataclass
 class RssConfig:
     feeds: list[Feed] = field(default_factory=lambda: list(DEFAULT_FEEDS))
+    max_candidates: int = 15  # places in the shortlist for all feeds together, at most
+    max_per_feed: int = 3  # of which one feed may take this many
 
 
 @dataclass
@@ -158,6 +162,10 @@ def load_config(path: Path | None = None) -> Config:
         raise ConfigError("final_story_count must be at least 1")
     if config.filter.shortlist_size < config.final_story_count:
         raise ConfigError("filter.shortlist_size must be at least final_story_count")
+    for name in ("rss.max_candidates", "rss.max_per_feed", "huggingface.max_candidates", "hackernews.max_candidates"):
+        section, key = name.split(".")
+        if getattr(getattr(config, section), key) < 1:
+            raise ConfigError(f"{name} must be at least 1")
     if config.run_budget_seconds < 1 or config.ollama.timeout_seconds < 1:
         raise ConfigError("run_budget_seconds and ollama.timeout_seconds must be at least 1")
     if config.hackernews.keyword_boost < 1:

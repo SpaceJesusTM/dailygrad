@@ -63,7 +63,7 @@ def test_config_found_via_environment_then_working_directory(tmp_path, monkeypat
 
 def test_story_count_and_ranking_defaults_and_overrides(tmp_path):
     defaults = Config()
-    assert (defaults.final_story_count, defaults.filter.shortlist_size, defaults.hackernews.keyword_boost) == (5, 18, 4.0)
+    assert (defaults.final_story_count, defaults.filter.shortlist_size, defaults.hackernews.keyword_boost) == (5, 25, 4.0)
     assert str(defaults.latest_markdown_path) == "data/latest.md" and str(defaults.latest_json_path) == "data/latest.json"
 
     config = load_config(write(tmp_path, "final_story_count = 4\n[hackernews]\nkeyword_boost = 2\n"))
@@ -100,6 +100,11 @@ def test_ollama_defaults_and_overrides(tmp_path):
         ("final_story_count = 0\n", "final_story_count must be at least 1"),
         ("final_story_count = 6\n[filter]\nshortlist_size = 5\n", "shortlist_size must be at least final_story_count"),
         ("[hackernews]\nkeyword_boost = 0.5\n", "keyword_boost must be at least 1"),
+        ("[rss]\nmax_per_feed = 0\n", "rss.max_per_feed must be at least 1"),
+        ("[rss]\nmax_candidates = 0\n", "rss.max_candidates must be at least 1"),
+        ("[huggingface]\nmax_candidates = -1\n", "huggingface.max_candidates must be at least 1"),
+        ("[hackernews]\nmax_candidates = 0\n", "hackernews.max_candidates must be at least 1"),
+        ("[rss]\nmax_per_feed = 'three'\n", "rss.max_per_feed must be of type int"),
         ("[ollama]\ntemperature = 'warm'\n", "ollama.temperature must be of type float"),
         ("[[rss.feeds]]\nname = 'No URL'\n", "needs a name and a url"),
         ("[[rss.feeds]]\nname = 'A'\nurl = 'https://a.example/rss'\nlink_hosts = 'a.example'\n", "must be a list of host names"),
@@ -140,3 +145,20 @@ def test_a_feed_may_restrict_the_hosts_its_entries_link_to(tmp_path):
     path = write(tmp_path, "[[rss.feeds]]\nname = 'A'\nurl = 'https://a.example/rss'\nlink_hosts = ['a.example']\n")
 
     assert load_config(path).rss.feeds == [Feed("A", "https://a.example/rss", link_hosts=["a.example"])]
+
+
+def test_shortlist_allocation_defaults_and_overrides(tmp_path):
+    defaults = Config()
+    allocation = (defaults.rss.max_candidates, defaults.huggingface.max_candidates, defaults.hackernews.max_candidates)
+    assert allocation == (15, 4, 6) and sum(allocation) == defaults.filter.shortlist_size == 25
+    assert defaults.rss.max_per_feed == 3
+
+    config = load_config(write(tmp_path, "[rss]\nmax_candidates = 9\nmax_per_feed = 2\n[hackernews]\nmax_candidates = 3\n"))
+    assert (config.rss.max_candidates, config.rss.max_per_feed, config.hackernews.max_candidates) == (9, 2, 3)
+    assert config.rss.feeds == DEFAULT_FEEDS  # setting the limits does not touch the feed list
+
+
+def test_a_config_written_before_the_allocation_settings_still_loads(tmp_path):
+    config = load_config(write(tmp_path, "[filter]\nshortlist_size = 18\n[[rss.feeds]]\nname = 'A'\nurl = 'https://a.example/rss'\n"))
+
+    assert config.filter.shortlist_size == 18 and config.rss.max_candidates == 15 and config.rss.max_per_feed == 3

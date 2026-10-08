@@ -82,13 +82,14 @@ The digest is printed and saved under `data/`. No configuration is needed.
 │ RSS feeds        │   │ drop already shown    │   │ summarise each       │   │ latest.md        │
 └──────────────────┘   │ rank, balance sources │   │ write the lesson     │   │ latest.json      │
                        └───────────────────────┘   └──────────────────────┘   └──────────────────┘
-                         about 2,400 → 18 items       18 → 5 stories            SQLite history
+                         about 2,400 → 25 items       25 → 5 stories            SQLite history
 ```
 
 1. **Fetch** candidates from every enabled source. A source that fails is skipped and named in the digest.
 2. **Filter without the model.** Old items, unpopular items, duplicates and stories already
-   shown are removed, and what is left is ranked. Up to 18 candidates go forward, shared
-   equally between the three kinds of source so that none can crowd out the others.
+   shown are removed, and what is left is ranked. Up to 25 candidates go forward, each kind
+   of source with its own maximum so that none can crowd out the others (see
+   [the shortlist](#the-shortlist)).
 3. **Select.** The model chooses the 5 most useful candidates. If it returns fewer, the list
    is topped up from the ranked shortlist, so a digest has exactly 5 stories whenever 5
    candidates exist.
@@ -151,10 +152,33 @@ a Hacker News story linking to openai.com can still appear.
 Add `--json` for output another program can read. [`docs/sources.md`](docs/sources.md) has
 the details.
 
+### The shortlist
+
+The model chooses the 5 stories from a shortlist of at most 25 candidates:
+
+| Kind of source | At most | Ranked by |
+|---|---:|---|
+| RSS feeds, all together | 15, and 3 from any one feed | newest first, in rounds |
+| Hugging Face Daily Papers | 4 | upvotes |
+| Hacker News | 6 | the score below |
+
+The feeds are taken in rounds: every feed's newest eligible post, then every feed's second
+newest, then the third, newest first within a round, until 15 are chosen. A feed that posts
+many times a day therefore gets three places at most, and a feed with nothing from the last
+48 hours gets none.
+
+These are limits, not quotas. A source that is disabled, unavailable or quiet leaves its
+places empty: they are never filled with older or already shown stories, and never handed
+to another kind of source. On such a day the shortlist is shorter than 25. The limits apply
+only to the shortlist; the model is free to pick its 5 from any sources.
+
+The limits are `max_candidates` and `max_per_feed` in the config file:
+see [`config.example.toml`](config.example.toml).
+
 ### How Hacker News stories are ranked
 
 The Hacker News front page covers every topic, so its stories are ranked before they
-compete for their share of the shortlist:
+compete for their six places in the shortlist:
 
 ```
 score = (points + comments / 2) × freshness × keyword boost
@@ -315,7 +339,7 @@ Latest digest:      /home/you/dailygrad/data/latest.md
 Latest JSON:        /home/you/dailygrad/data/latest.json
 Ollama endpoint:    http://localhost:11434
 Ollama model:       qwen3.5:4b-q4_K_M
-Stories per digest: 5, chosen from up to 18 candidates
+Stories per digest: 5, chosen from up to 25 candidates
 Sources:            OpenAI, Google DeepMind, Google Research, Anthropic News, Meta AI Research, NVIDIA Developer Blog, Mistral AI News, Microsoft Research, Hugging Face Blog, Hugging Face Daily Papers, Hacker News
 Source preferences: /home/you/dailygrad/data/source_preferences.json
 ```

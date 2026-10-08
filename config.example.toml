@@ -42,8 +42,10 @@ timeout_seconds = 180
 # Ignore items older than this.
 max_age_hours = 48
 # Maximum number of candidates handed to the model, which picks final_story_count of them.
-# The sources share these places equally.
-shortlist_size = 18
+# Each kind of source also has its own max_candidates below (15 + 4 + 6 = 25). Those are
+# limits, not quotas: places a source cannot fill are left empty. If shortlist_size is
+# smaller than their sum, the sources take turns until it is reached.
+shortlist_size = 25
 # Words that mark a Hacker News title as AI-related (whole word, case-insensitive).
 # A match raises the story's rank; it is not required. Setting this replaces the
 # built-in list, and an empty list ranks Hacker News by popularity and freshness alone.
@@ -54,12 +56,22 @@ shortlist_size = 18
 [hackernews]
 enabled = true
 min_points = 50
+# At most this many Hacker News stories reach the shortlist.
+max_candidates = 6
 # A title matching a keyword ranks as if the story were this many times as popular.
 keyword_boost = 4.0
 
 [huggingface]
 enabled = true
 min_upvotes = 5
+# At most this many papers reach the shortlist.
+max_candidates = 4
+
+# At most max_candidates feed posts reach the shortlist, and at most max_per_feed from any
+# one feed, so a feed that posts many times a day cannot crowd out the others.
+[rss]
+max_candidates = 15
+max_per_feed = 3
 
 # RSS/Atom feeds. Defining any [[rss.feeds]] entry replaces the built-in list.
 # Use `feeds = []` under [rss] to disable RSS entirely.
