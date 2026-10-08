@@ -13,13 +13,18 @@ A change applies from the next run. It does not regenerate today's digest; run
 | `openai` | OpenAI | `labs` |
 | `google-deepmind` | Google DeepMind | `labs` |
 | `google-research` | Google Research | `labs` |
+| `anthropic-news` | Anthropic News (unofficial feed) | `labs` |
+| `meta-ai-research` | Meta AI Research | `labs` |
+| `nvidia-developer-blog` | NVIDIA Developer Blog | `labs` |
+| `mistral-ai-news` | Mistral AI News | `labs` |
+| `microsoft-research` | Microsoft Research | `labs` |
 | `hugging-face-blog` | Hugging Face Blog | `hugging-face` |
 | `hugging-face-daily-papers` | Hugging Face Daily Papers | `hugging-face` |
 | `hacker-news` | Hacker News | `community` |
 
 | Group ID | Name | Members |
 |---|---|---|
-| `labs` | AI labs and research | `openai`, `google-deepmind`, `google-research` |
+| `labs` | AI labs and research | `openai`, `google-deepmind`, `google-research`, `anthropic-news`, `meta-ai-research`, `nvidia-developer-blog`, `mistral-ai-news`, `microsoft-research` |
 | `hugging-face` | Hugging Face | `hugging-face-blog`, `hugging-face-daily-papers` |
 | `community` | Community | `hacker-news` |
 | `all` | | every source |
@@ -30,13 +35,60 @@ An ID is the source's name in lower case with hyphens. A feed you add under `[[r
 gets an ID the same way ("My favourite lab" becomes `my-favourite-lab`) and belongs to no
 group. Two sources may not share an ID, and a feed may not be named after a group.
 
+## The RSS feeds
+
+| ID | Feed URL |
+|---|---|
+| `openai` | https://openai.com/news/rss.xml |
+| `google-deepmind` | https://deepmind.google/blog/rss.xml |
+| `google-research` | https://research.google/blog/rss/ |
+| `anthropic-news` | https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml |
+| `meta-ai-research` | https://engineering.fb.com/category/ai-research/feed/ |
+| `nvidia-developer-blog` | https://developer.nvidia.com/blog/feed/ |
+| `mistral-ai-news` | https://mistral.ai/news/rss |
+| `microsoft-research` | https://www.microsoft.com/en-us/research/feed/ |
+| `hugging-face-blog` | https://huggingface.co/blog/feed.xml |
+
+Limits worth knowing:
+
+- **`anthropic-news` is unofficial.** Anthropic publishes no feed. This one is a static XML
+  file in a [community repository](https://github.com/taobojlen/anthropic-rss-feed), not
+  operated by Anthropic. DailyGrad downloads only that file, with the same checks and size
+  cap as an article page, and never runs the repository's code. An entry is used only if
+  its link is `https` on `anthropic.com` or `www.anthropic.com`; anything else is ignored.
+  If the feed stops updating, the source simply contributes nothing; if it cannot be
+  fetched or parsed, the digest lists it under "Sources unavailable" and carries on. Its
+  dates have no time of day.
+- `meta-ai-research` publishes about once a month, so it rarely has anything inside the
+  48-hour window. `nvidia-developer-blog` publishes several posts a day, many of them
+  product tutorials.
+- The RSS feeds have no popularity signal and share the RSS places in the shortlist,
+  newest first. No publisher is ranked above another; the model chooses the five stories
+  from the shortlist as before.
+- Defining `[[rss.feeds]]` in your config replaces the whole built-in list. A config
+  written before a feed was added does not gain it: copy the entry from
+  `config.example.toml`. For the Anthropic feed, copy its `link_hosts` line too.
+
+### Feeds added in an update
+
+The five feeds from `anthropic-news` to `microsoft-research` were added after the first
+release. The usual rule for a new source applies (see
+[Two kinds of selection](#two-kinds-of-selection)), and the preferences file is not
+rewritten:
+
+- No preferences file, or only `enable` and `disable` used: the new feeds are on. That
+  includes the case where you had run `disable labs`: it switched off the labs that
+  existed then, so repeat it if you want the new ones off too.
+- A selection made with `set`: the new feeds are off until you `enable` them, even if the
+  selection named `labs`.
+
 ## Commands
 
 ```sh
 dailygrad sources                          # list the sources and their status
 dailygrad sources disable hugging-face     # switch a group off
 dailygrad sources enable hugging-face-daily-papers
-dailygrad sources disable google-research  # DeepMind and OpenAI stay on
+dailygrad sources disable google-research  # the other labs stay on
 dailygrad sources set labs hacker-news     # only these, now and when sources are added
 dailygrad sources set all                  # back to the default: everything on
 ```
@@ -50,6 +102,11 @@ ID                         Source                     Group         Status
 openai                     OpenAI                     labs          enabled
 google-deepmind            Google DeepMind            labs          enabled
 google-research            Google Research            labs          enabled
+anthropic-news             Anthropic News             labs          enabled
+meta-ai-research           Meta AI Research           labs          enabled
+nvidia-developer-blog      NVIDIA Developer Blog      labs          enabled
+mistral-ai-news            Mistral AI News            labs          enabled
+microsoft-research         Microsoft Research         labs          enabled
 hugging-face-blog          Hugging Face Blog          hugging-face  disabled
 hugging-face-daily-papers  Hugging Face Daily Papers  hugging-face  disabled
 hacker-news                Hacker News                community     enabled
@@ -122,7 +179,6 @@ After `set` with a list of IDs, it lists what is on, and everything else is off:
   "enabled_only": [
     "openai",
     "google-deepmind",
-    "google-research",
     "hacker-news"
   ],
   "updated_at": "2026-10-08T14:40:02+00:00"
@@ -180,7 +236,7 @@ there. Listing and changing return the same layout:
     {"id": "hacker-news", "name": "Hacker News", "group": "community", "enabled": false}
   ],
   "groups": [
-    {"id": "labs", "name": "AI labs and research", "sources": ["openai", "google-deepmind", "google-research"]}
+    {"id": "labs", "name": "AI labs and research", "sources": ["openai", "google-deepmind", "google-research", "anthropic-news"]}
   ],
   "preferences_file": "/home/you/dailygrad/data/source_preferences.json"
 }
@@ -221,3 +277,21 @@ as `disable` with no ID, exits with 2 and prints a usage message on stderr, not 
 
 Each digest also records the sources its run used: see `sources` in
 [output.md](output.md).
+
+## Adding a built-in feed
+
+Before adding one, download it and check that it parses, that its entries have a title, a
+link and a date, and that it has posted recently. A site without a working feed is left
+out; DailyGrad does not scrape pages.
+
+1. Add a `Feed(name, url)` to `DEFAULT_FEEDS` in `src/dailygrad/config.py`, placed where it
+   should come in the fetch order. The ID is derived from the name, so choose a name that
+   will not need to change. For a feed not published by the site it covers, set
+   `link_hosts` to the hosts its entries may link to.
+2. Add the ID and its group to `SOURCE_GROUPS` in `src/dailygrad/sources/__init__.py`.
+3. Add the same entry to `config.example.toml`; a test keeps the two in step.
+4. Update the tables above and the list in `README.md`, and the expected IDs in
+   `tests/test_preferences.py`.
+
+Nothing else is needed: listing, preferences, fetching, filtering and the digest's
+`sources` key all follow the registry.

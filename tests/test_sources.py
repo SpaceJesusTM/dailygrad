@@ -2,9 +2,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from dailygrad.config import Feed
+from dailygrad import articles, web
+from dailygrad.config import DEFAULT_FEEDS, Config, Feed
 from dailygrad.models import canonical_url
-from dailygrad.sources import hackernews, huggingface, rss
+from dailygrad.sources import GROUPS, available_sources, hackernews, huggingface, rss, source_id
 
 HN_PAYLOAD = {
     "hits": [
@@ -147,3 +148,110 @@ def test_atom_parse_converts_dates_to_utc():
 def test_unparseable_feed_raises():
     with pytest.raises(ValueError, match="Lab Blog"):
         rss.parse(FEED, b"<html><body>502 Bad Gateway")
+
+
+# --- the feeds added after the first release
+
+NEW_FEEDS = {
+    "anthropic-news": "Anthropic News",
+    "meta-ai-research": "Meta AI Research",
+    "nvidia-developer-blog": "NVIDIA Developer Blog",
+    "mistral-ai-news": "Mistral AI News",
+    "microsoft-research": "Microsoft Research",
+}
+ANTHROPIC = next(feed for feed in DEFAULT_FEEDS if feed.name == "Anthropic News")
+
+
+def anthropic_feed(*links):
+    items = "".join(
+        f"<item><title>Post {n}</title><link>{link}</link><pubDate>Wed, 07 Oct 2026 00:00:00 +0000</pubDate></item>"
+        for n, link in enumerate(links)
+    )
+    return f'<?xml version="1.0"?><rss version="2.0"><channel><title>Anthropic News</title>{items}</channel></rss>'.encode()
+
+
+def test_the_new_feeds_are_registered_with_stable_unique_ids():
+    sources = {source.id: source for source in available_sources(Config())}
+
+    assert len(sources) == len(DEFAULT_FEEDS) + 2  # no two sources share an ID
+    assert {id: sources[id].name for id in NEW_FEEDS} == NEW_FEEDS
+    assert all(source_id(name) == id for id, name in NEW_FEEDS.items())
+    assert all(sources[id].group == "labs" for id in NEW_FEEDS)
+    assert not set(sources) & {"all", *GROUPS}
+
+
+def test_built_in_feeds_are_https_and_only_the_third_party_one_restricts_its_links():
+    assert all(feed.url.startswith("https://") for feed in DEFAULT_FEEDS)
+    assert [feed.name for feed in DEFAULT_FEEDS if feed.link_hosts] == ["Anthropic News"]
+    assert ANTHROPIC.link_hosts == ["anthropic.com", "www.anthropic.com"]
+
+
+def test_the_anthropic_feed_keeps_only_https_links_to_anthropic():
+    posts = rss.parse(
+        ANTHROPIC,
+        anthropic_feed(
+            "https://www.anthropic.com/news/a",
+            "https://anthropic.com/news/b",
+            "http://www.anthropic.com/news/plain-http",
+            "https://evil.example/news/c",
+            "https://www.anthropic.com.evil.example/news/d",
+            "https://evil.example/www.anthropic.com/e",
+            "https://www.anthropic.com@evil.example/f",
+            "https://docs.anthropic.com/g",
+            "https://[not-a-host/h",
+            "javascript:alert(1)",
+        ),
+    )
+
+    assert [post.url for post in posts] == ["https://www.anthropic.com/news/a", "https://anthropic.com/news/b"]
+    assert {post.source for post in posts} == {"Anthropic News"}
+    assert posts[0].published == datetime(2026, 10, 7, tzinfo=timezone.utc)
+
+
+def test_a_feed_without_link_hosts_accepts_any_link():
+    (post,) = rss.parse(FEED, anthropic_feed("http://elsewhere.example/post"))
+
+    assert post.url == "http://elsewhere.example/post"
+
+
+def test_a_third_party_feed_is_downloaded_with_the_checked_capped_downloader(monkeypatch):
+    requested = []
+
+    def download(url, content_types):
+        requested.append((url, content_types))
+        return anthropic_feed("https://www.anthropic.com/news/a")
+
+    monkeypatch.setattr(articles, "download", download)
+
+    (post,) = rss.fetch(ANTHROPIC)  # web.get is not used: the autouse fixture would fail the request
+
+    assert post.url == "https://www.anthropic.com/news/a"
+    assert requested == [(ANTHROPIC.url, rss.FEED_TYPES)]
+    assert "text/plain" in rss.FEED_TYPES  # what raw.githubusercontent.com serves
+
+
+def test_an_ordinary_feed_is_downloaded_with_retries(monkeypatch):
+    class Response:
+        content = RSS_FEED
+
+    monkeypatch.setattr(web, "get", lambda url: Response())
+
+    assert [post.title for post in rss.fetch(FEED)] == ["Introducing & shipping Model X"]
+
+
+@pytest.mark.parametrize("body", [b"", b"404: Not Found", b"<html><body>Not a feed", b"<rss><channel><item><title>cut off"])
+def test_a_malformed_or_empty_feed_yields_an_error_or_nothing_but_never_bad_entries(body):
+    try:
+        assert rss.parse(ANTHROPIC, body) == []
+    except ValueError as error:
+        assert "Anthropic News" in str(error)
+
+
+def test_summary_markup_in_a_feed_is_reduced_to_plain_text():
+    feed = anthropic_feed("https://www.anthropic.com/news/a").replace(
+        b"</item>", b"<description>&lt;script&gt;alert(1)&lt;/script&gt; &lt;b&gt;Hello&lt;/b&gt;</description></item>"
+    )
+
+    (post,) = rss.parse(ANTHROPIC, feed)
+
+    assert "<" not in post.summary and "Hello" in post.summary

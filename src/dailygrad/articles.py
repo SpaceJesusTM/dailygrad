@@ -51,8 +51,8 @@ def check_url(url: str) -> None:
             raise UnsafeURLError(f"host {parts.hostname} resolves to a non-public address")
 
 
-def download(url: str) -> bytes:
-    """Download an HTML page, following redirects by hand so each hop is checked."""
+def download(url: str, content_types: tuple[str, ...] = HTML_TYPES) -> bytes:
+    """Download a page of one of `content_types`, following redirects by hand so each hop is checked."""
     for _ in range(MAX_REDIRECTS + 1):
         check_url(url)
         # No retries here: a failed article is simply skipped.
@@ -65,8 +65,8 @@ def download(url: str) -> bytes:
                 continue
             response.raise_for_status()
             content_type = response.headers.get("Content-Type", "")
-            if not content_type.startswith(HTML_TYPES):
-                raise ValueError(f"not an HTML page ({content_type or 'no content type'}): {url}")
+            if not content_type.startswith(content_types):
+                raise ValueError(f"unexpected content type ({content_type or 'none'}): {url}")
             return _read_capped(response)
         finally:
             response.close()

@@ -75,6 +75,30 @@ url = "https://deepmind.google/blog/rss.xml"
 name = "Google Research"
 url = "https://research.google/blog/rss/"
 
+# Anthropic publishes no feed; this one is unofficial and community-maintained.
+# link_hosts (optional, for any feed) keeps only entries whose link is https on one of
+# these hosts, and makes the feed download size-capped. Keep it if you keep this feed.
+[[rss.feeds]]
+name = "Anthropic News"
+url = "https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml"
+link_hosts = ["anthropic.com", "www.anthropic.com"]
+
+[[rss.feeds]]
+name = "Meta AI Research"
+url = "https://engineering.fb.com/category/ai-research/feed/"
+
+[[rss.feeds]]
+name = "NVIDIA Developer Blog"
+url = "https://developer.nvidia.com/blog/feed/"
+
+[[rss.feeds]]
+name = "Mistral AI News"
+url = "https://mistral.ai/news/rss"
+
+[[rss.feeds]]
+name = "Microsoft Research"
+url = "https://www.microsoft.com/en-us/research/feed/"
+
 [[rss.feeds]]
 name = "Hugging Face Blog"
 url = "https://huggingface.co/blog/feed.xml"

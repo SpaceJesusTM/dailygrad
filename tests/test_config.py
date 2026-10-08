@@ -101,7 +101,8 @@ def test_ollama_defaults_and_overrides(tmp_path):
         ("final_story_count = 6\n[filter]\nshortlist_size = 5\n", "shortlist_size must be at least final_story_count"),
         ("[hackernews]\nkeyword_boost = 0.5\n", "keyword_boost must be at least 1"),
         ("[ollama]\ntemperature = 'warm'\n", "ollama.temperature must be of type float"),
-        ("[[rss.feeds]]\nname = 'No URL'\n", "needs exactly a name and a url"),
+        ("[[rss.feeds]]\nname = 'No URL'\n", "needs a name and a url"),
+        ("[[rss.feeds]]\nname = 'A'\nurl = 'https://a.example/rss'\nlink_hosts = 'a.example'\n", "must be a list of host names"),
         ("not toml at all", "cannot read config file"),
     ],
 )
@@ -133,3 +134,9 @@ def test_run_budget_default_override_and_validation(tmp_path):
         path.write_text(text)
         with pytest.raises(ConfigError, match="must be at least 1"):
             load_config(path)
+
+
+def test_a_feed_may_restrict_the_hosts_its_entries_link_to(tmp_path):
+    path = write(tmp_path, "[[rss.feeds]]\nname = 'A'\nurl = 'https://a.example/rss'\nlink_hosts = ['a.example']\n")
+
+    assert load_config(path).rss.feeds == [Feed("A", "https://a.example/rss", link_hosts=["a.example"])]

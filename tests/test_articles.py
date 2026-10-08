@@ -207,7 +207,7 @@ def test_download_stops_when_the_deadline_passes(pages, monkeypatch):
 def test_download_rejects_non_html(pages, content_type):
     pages["https://example.com/file"] = FakeResponse(body=b"%PDF-1.7", content_type=content_type)
 
-    with pytest.raises(ValueError, match="not an HTML page"):
+    with pytest.raises(ValueError, match="unexpected content type"):
         articles.download("https://example.com/file")
 
 

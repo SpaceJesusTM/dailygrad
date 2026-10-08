@@ -26,12 +26,25 @@ class ConfigError(ValueError):
 class Feed:
     name: str
     url: str
+    # For a feed published by someone other than the site it covers: an entry is kept only
+    # if its link is https and on one of these hosts. Empty means any link is accepted.
+    link_hosts: list[str] = field(default_factory=list)
 
 
 DEFAULT_FEEDS = [
     Feed("OpenAI", "https://openai.com/news/rss.xml"),
     Feed("Google DeepMind", "https://deepmind.google/blog/rss.xml"),
     Feed("Google Research", "https://research.google/blog/rss/"),
+    # Anthropic publishes no feed. This one is community-maintained, hence link_hosts.
+    Feed(
+        "Anthropic News",
+        "https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml",
+        link_hosts=["anthropic.com", "www.anthropic.com"],
+    ),
+    Feed("Meta AI Research", "https://engineering.fb.com/category/ai-research/feed/"),
+    Feed("NVIDIA Developer Blog", "https://developer.nvidia.com/blog/feed/"),
+    Feed("Mistral AI News", "https://mistral.ai/news/rss"),
+    Feed("Microsoft Research", "https://www.microsoft.com/en-us/research/feed/"),
     Feed("Hugging Face Blog", "https://huggingface.co/blog/feed.xml"),
 ]
 
@@ -135,7 +148,11 @@ def load_config(path: Path | None = None) -> Config:
         try:
             config.rss.feeds = [Feed(**feed) for feed in config.rss.feeds]
         except TypeError as exc:
-            raise ConfigError("each [[rss.feeds]] entry needs exactly a name and a url") from exc
+            raise ConfigError("each [[rss.feeds]] entry needs a name and a url, and may have link_hosts") from exc
+        for feed in config.rss.feeds:
+            hosts = feed.link_hosts
+            if not (isinstance(hosts, list) and all(isinstance(host, str) for host in hosts)):
+                raise ConfigError(f"link_hosts of the feed {feed.name!r} must be a list of host names")
 
     if config.final_story_count < 1:
         raise ConfigError("final_story_count must be at least 1")

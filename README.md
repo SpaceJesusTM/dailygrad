@@ -107,10 +107,14 @@ than one article at a time.
 |---|---|---|
 | Hacker News | Current front-page stories | 50 points or more |
 | Hugging Face Daily Papers | Recently featured papers | 5 upvotes or more |
-| RSS feeds | OpenAI, Google DeepMind, Google Research and the Hugging Face blog by default | always |
+| RSS feeds | OpenAI, Google DeepMind, Google Research, Anthropic, Meta AI Research, the NVIDIA Developer Blog, Mistral AI, Microsoft Research and the Hugging Face blog by default | always |
 
 All sources are limited to the last 48 hours. The feeds, thresholds and time window are
-configurable.
+configurable. The digest stays at five stories however many sources are on.
+
+Anthropic publishes no feed, so `anthropic-news` reads an unofficial, community-maintained
+one. Only its entries that link to anthropic.com over HTTPS are used. The feeds and their
+limits are listed in [`docs/sources.md`](docs/sources.md).
 
 ### Choosing sources
 
@@ -128,7 +132,7 @@ dailygrad sources set all                  # everything on again, the default
 
 | Group | Sources |
 |---|---|
-| `labs` | `openai`, `google-deepmind`, `google-research` |
+| `labs` | `openai`, `google-deepmind`, `google-research`, `anthropic-news`, `meta-ai-research`, `nvidia-developer-blog`, `mistral-ai-news`, `microsoft-research` |
 | `hugging-face` | `hugging-face-blog`, `hugging-face-daily-papers` |
 | `community` | `hacker-news` |
 
@@ -312,7 +316,7 @@ Latest JSON:        /home/you/dailygrad/data/latest.json
 Ollama endpoint:    http://localhost:11434
 Ollama model:       qwen3.5:4b-q4_K_M
 Stories per digest: 5, chosen from up to 18 candidates
-Sources:            OpenAI, Google DeepMind, Google Research, Hugging Face Blog, Hugging Face Daily Papers, Hacker News
+Sources:            OpenAI, Google DeepMind, Google Research, Anthropic News, Meta AI Research, NVIDIA Developer Blog, Mistral AI News, Microsoft Research, Hugging Face Blog, Hugging Face Daily Papers, Hacker News
 Source preferences: /home/you/dailygrad/data/source_preferences.json
 ```
 
@@ -389,6 +393,11 @@ pytest
 
 The tests fake every source, article and model response, so they need no network, Ollama
 or GPU. GitHub Actions runs them on Python 3.11, 3.12 and 3.13.
+
+To add a built-in RSS feed, add a `Feed` to `DEFAULT_FEEDS` in `src/dailygrad/config.py`,
+its ID and group to `SOURCE_GROUPS` in `src/dailygrad/sources/__init__.py`, and the same
+entry to `config.example.toml`; then update the tables in `docs/sources.md`.
+[`docs/sources.md`](docs/sources.md#adding-a-built-in-feed) has the checks to make first.
 
 The code is deliberately plain: no agent framework, vector database or web application.
 [`PROJECT_SPEC.md`](PROJECT_SPEC.md) describes the design goals.
