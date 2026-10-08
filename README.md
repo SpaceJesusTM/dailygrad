@@ -85,7 +85,7 @@ The digest is printed and saved under `data/`. No configuration is needed.
                          about 2,400 → 18 items       18 → 5 stories            SQLite history
 ```
 
-1. **Fetch** candidates from every source. A source that fails is skipped and named in the digest.
+1. **Fetch** candidates from every enabled source. A source that fails is skipped and named in the digest.
 2. **Filter without the model.** Old items, unpopular items, duplicates and stories already
    shown are removed, and what is left is ranked. Up to 18 candidates go forward, shared
    equally between the three kinds of source so that none can crowd out the others.
@@ -111,6 +111,41 @@ than one article at a time.
 
 All sources are limited to the last 48 hours. The feeds, thresholds and time window are
 configurable.
+
+### Choosing sources
+
+Every source is on by default. `dailygrad sources` lists them and switches them on or off,
+one at a time or by group:
+
+```sh
+dailygrad sources                          # list the sources and their status
+dailygrad sources disable hugging-face     # a group: the blog and the daily papers
+dailygrad sources disable google-research  # one source
+dailygrad sources enable hugging-face-daily-papers
+dailygrad sources set labs hacker-news     # only these, now and when sources are added
+dailygrad sources set all                  # everything on again, the default
+```
+
+| Group | Sources |
+|---|---|
+| `labs` | `openai`, `google-deepmind`, `google-research` |
+| `hugging-face` | `hugging-face-blog`, `hugging-face-daily-papers` |
+| `community` | `hacker-news` |
+
+A change applies from the next run; it does not regenerate today's digest. The choice is
+saved in `data/source_preferences.json`, which Git ignores, so it survives updates. At
+least one source must stay on, and an unknown ID is refused.
+
+A source that a later version adds is on by default. After `set` with a list it is off,
+because that selection means "only these"; `set all` returns to the default. If the
+preferences file is ever damaged, a run stops with exit code 2 instead of guessing, and
+`dailygrad sources set all` repairs it.
+
+A disabled source is simply not fetched. Its publisher is not blocked: with `openai` off,
+a Hacker News story linking to openai.com can still appear.
+
+Add `--json` for output another program can read. [`docs/sources.md`](docs/sources.md) has
+the details.
 
 ### How Hacker News stories are ranked
 
@@ -175,9 +210,10 @@ rather than renaming them.
 | `data/latest.md` | The most recent digest. |
 | `data/latest.json` | The most recent digest as structured data: the same document as its dated JSON. |
 | `data/dailygrad.db` | SQLite history, used to avoid repeats and to track the curriculum. |
+| `data/source_preferences.json` | Which sources are switched off. Written by `dailygrad sources`, not by a run. |
 
-The JSON carries a run ID, the run status, the stories with their summaries, the lesson and
-the recall question, so another program can use a digest without parsing Markdown or reading
+The JSON carries a run ID, the run status, the stories with their summaries, the sources
+the run used, the lesson and the recall question, so another program can use a digest without parsing Markdown or reading
 the database. Its layout is specified in [`docs/output.md`](docs/output.md), with a real
 example in [`examples/sample-digest.json`](examples/sample-digest.json).
 
@@ -189,7 +225,7 @@ Files are replaced atomically, so a reader never sees a half-written file.
 |---|---|
 | 0 | The digest was produced normally. |
 | 1 | Degraded: a model request failed, so a summary or the lesson is missing. A crash also exits with 1. |
-| 2 | The configuration is invalid. |
+| 2 | The configuration or the source preferences file is invalid. Nothing is fetched or written. |
 
 A degraded run still writes every output, and `latest.json` says `"status": "degraded"`.
 Nothing is lost: a story the model failed on is not recorded as shown, so a later run can
@@ -243,7 +279,10 @@ Ollama endpoint:    http://localhost:11434
 Ollama model:       qwen3.5:4b-q4_K_M
 Stories per digest: 5, chosen from up to 18 candidates
 Sources:            OpenAI, Google DeepMind, Google Research, Hugging Face Blog, Hugging Face Daily Papers, Hacker News
+Source preferences: /home/you/dailygrad/data/source_preferences.json
 ```
+
+`Sources` lists the sources that are switched on.
 
 `dailygrad.toml` and `data/` are ignored by Git.
 

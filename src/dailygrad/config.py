@@ -97,6 +97,10 @@ class Config:
     def latest_json_path(self) -> Path:
         return Path(self.data_dir).expanduser() / "latest.json"
 
+    @property
+    def source_preferences_path(self) -> Path:
+        return Path(self.data_dir).expanduser() / "source_preferences.json"
+
 
 def find_config_file(path: Path | None = None) -> Path | None:
     """The config file to use: `path`, else $DAILYGRAD_CONFIG, else ./dailygrad.toml, else None (defaults)."""

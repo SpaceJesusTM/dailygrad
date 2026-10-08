@@ -2,9 +2,8 @@
 
 import logging
 from datetime import datetime, timezone
-from functools import partial
 
-from dailygrad import db, llm
+from dailygrad import db, llm, preferences
 from dailygrad.config import Config
 from dailygrad.curriculum import load_curriculum
 from dailygrad.filtering import build_shortlist
@@ -12,7 +11,7 @@ from dailygrad.lessons import build_lesson, restore_lesson
 from dailygrad.models import Candidate
 from dailygrad.output import dated_markdown_path, digest_document, write_outputs
 from dailygrad.render import render_digest
-from dailygrad.sources import hackernews, huggingface, rss
+from dailygrad.sources import Source, available_sources
 from dailygrad.stories import build_stories
 
 log = logging.getLogger(__name__)
@@ -32,7 +31,10 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
     today = now.astimezone().date()  # the digest is dated in local time
 
     topics = load_curriculum()  # before any network or model work, so a broken file fails fast
-    candidates, failed_sources = fetch_all(config)
+    sources = available_sources(config)
+    # Read once: the run uses this snapshot throughout. An unusable preferences file raises here.
+    disabled = preferences.disabled_for_run(config, sources)
+    candidates, failed_sources = fetch_all([source for source in sources if source.id not in disabled])
 
     conn = db.connect(config.db_path)
     try:
@@ -65,7 +67,10 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
             db.record_summaries(conn, run_id, stories, config.ollama.model, now)
             if lesson and lesson_is_new:  # recording a lesson is what advances the curriculum
                 db.record_lesson(conn, run_id, lesson, config.ollama.model, now)
-            document = digest_document(run_id, today, now, config.ollama.model, stories, failed_sources, lesson)
+            document = digest_document(
+                run_id, today, now, config.ollama.model, stories, failed_sources, lesson,
+                preferences.snapshot(sources, disabled),
+            )  # fmt: skip
             write_outputs(config, today, digest, document)
     finally:
         conn.close()
@@ -80,23 +85,13 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
     return digest, document["status"] == "ok"
 
 
-def fetch_all(config: Config) -> tuple[list[Candidate], list[str]]:
-    """Fetch every enabled source. Returns the candidates and the names of sources that failed.
-
-    The order matters: deduplication keeps the first copy of a story, so the official
-    feed or the paper entry is preferred over a Hacker News link to the same thing.
-    """
-    fetchers = [(feed.name, partial(rss.fetch, feed)) for feed in config.rss.feeds]
-    if config.huggingface.enabled:
-        fetchers.append(("Hugging Face Daily Papers", huggingface.fetch))
-    if config.hackernews.enabled:
-        fetchers.append(("Hacker News", hackernews.fetch))
-
+def fetch_all(sources: list[Source]) -> tuple[list[Candidate], list[str]]:
+    """Fetch the given sources in order. Returns the candidates and the names of sources that failed."""
     candidates, failed_sources = [], []
-    for name, fetch in fetchers:
+    for source in sources:
         try:
-            candidates += fetch()
+            candidates += source.fetch()
         except Exception as exc:  # one broken source must not abort the others
-            log.warning("source %s failed: %s", name, exc)
-            failed_sources.append(name)
+            log.warning("source %s failed: %s", source.name, exc)
+            failed_sources.append(source.name)
     return candidates, failed_sources

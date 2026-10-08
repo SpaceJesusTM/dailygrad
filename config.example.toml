@@ -42,6 +42,8 @@ shortlist_size = 18
 # built-in list, and an empty list ranks Hacker News by popularity and freshness alone.
 # keywords = ["AI", "LLM", "transformer"]
 
+# `enabled = false` here or under [huggingface] removes the source altogether. To switch
+# sources on and off day to day, use `dailygrad sources` instead: see docs/sources.md.
 [hackernews]
 enabled = true
 min_points = 50

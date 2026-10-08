@@ -25,6 +25,7 @@ def digest_document(
     stories: list[Story],
     failed_sources: list[str],
     lesson: Lesson | None,
+    sources: list[dict],
 ) -> dict:
     """The digest as plain data, for the JSON files. Every key is always present; a missing value is null."""
     degraded = lesson is None or any(story.model_failed for story in stories)
@@ -37,6 +38,7 @@ def digest_document(
         "model": model,
         "stories": [_story(story) for story in stories],
         "failed_sources": list(failed_sources),
+        "sources": sources,  # every available source, and whether this run fetched it
         "lesson": _lesson(lesson),
         "recall": _recall(lesson),
     }

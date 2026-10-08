@@ -12,7 +12,7 @@ from conftest import NOW
 from dailygrad import articles, cli, lessons, llm, pipeline, stories, web
 from dailygrad.config import Config, Feed
 from dailygrad.curriculum import build_schedule, load_curriculum
-from dailygrad.sources import hackernews, huggingface
+from dailygrad.sources import available_sources, hackernews, huggingface
 
 FEED = Feed("Lab Blog", "https://lab.example/rss.xml")
 
@@ -301,7 +301,7 @@ def test_disabled_sources_are_not_fetched(config, fake_web):
     config.huggingface.enabled = False
     del fake_web[hackernews.API_URL], fake_web[huggingface.API_URL]  # fetching these would raise KeyError
 
-    candidates, failed = pipeline.fetch_all(config)
+    candidates, failed = pipeline.fetch_all(available_sources(config))
 
     assert [c.source for c in candidates] == ["Lab Blog"]
     assert failed == []
@@ -385,6 +385,11 @@ def test_latest_json_describes_the_same_digest(config, fake_web, model, fake_art
         "model": "qwen3.5:4b-q4_K_M",
         "stories": [],  # the fixture news is two days old by now
         "failed_sources": [],
+        "sources": [
+            {"id": "lab-blog", "name": "Lab Blog", "group": None, "enabled": True},
+            {"id": "hugging-face-daily-papers", "name": "Hugging Face Daily Papers", "group": "hugging-face", "enabled": True},
+            {"id": "hacker-news", "name": "Hacker News", "group": "community", "enabled": True},
+        ],
         "lesson": {
             "topic_id": SCHEDULE[2].id,
             "title": SCHEDULE[2].title,

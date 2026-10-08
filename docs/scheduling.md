@@ -8,10 +8,14 @@ Any scheduler can run it. Three things matter for all of them:
   file, and point to that file with `--config` or `DAILYGRAD_CONFIG`.
 - **Ollama must be running** at the configured endpoint when the job starts.
 - **Check the exit code.** 0 is a normal digest, 1 is a degraded digest or a crash, 2 is a
-  configuration error. See [output.md](output.md).
+  configuration error or a damaged source preferences file. See [output.md](output.md).
 
 Running more than once a day is safe: stories are not repeated, and the micro-lesson stays
 the same until the next calendar day.
+
+`dailygrad sources` can be used while a schedule is active. A change is picked up by the
+next scheduled run. Give it the same `--config` (or working directory) as the scheduled
+job, so both use the same data directory.
 
 The examples assume DailyGrad is installed in a virtual environment at
 `/home/you/dailygrad/.venv` with its config at `/home/you/dailygrad/dailygrad.toml`.

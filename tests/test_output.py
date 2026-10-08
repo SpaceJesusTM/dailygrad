@@ -15,12 +15,13 @@ DAY = date(2026, 10, 7)
 GENERATED = datetime(2026, 10, 7, 12, 30, 15, 123456, tzinfo=timezone.utc)
 TOPIC = Topic("tf-masking", "architectures", "Transformers", 5, "Causal and padding masks", ("a", "b", "c"), "What does the causal mask do?")
 OLDER = Topic("nn-backprop", "foundations", "Backpropagation", 1, "Backpropagation", ("a", "b", "c"), "Why is reverse mode efficient?")
-KEYS = ["schema_version", "run_id", "date", "generated_at", "status", "model", "stories", "failed_sources", "lesson", "recall"]
+KEYS = ["schema_version", "run_id", "date", "generated_at", "status", "model", "stories", "failed_sources", "sources", "lesson", "recall"]
+SOURCES = [{"id": "hacker-news", "name": "Hacker News", "group": "community", "enabled": True}]
 STORY_KEYS = ["id", "title", "source", "url", "what_happened", "why_it_matters", "evidence", "model_failed"]
 
 
 def document(stories=(), failed_sources=(), lesson=Lesson(TOPIC, "A lesson.")):
-    return output.digest_document(7, DAY, GENERATED, "test-model", list(stories), list(failed_sources), lesson)
+    return output.digest_document(7, DAY, GENERATED, "test-model", list(stories), list(failed_sources), lesson, SOURCES)
 
 
 def test_document_has_a_fixed_set_of_keys_in_a_fixed_order(make_candidate):
@@ -32,6 +33,7 @@ def test_document_has_a_fixed_set_of_keys_in_a_fixed_order(make_candidate):
     assert (full["schema_version"], full["run_id"], full["date"], full["model"]) == (1, 7, "2026-10-07", "test-model")
     assert full["generated_at"] == "2026-10-07T12:30:15+00:00"  # whole seconds, with the UTC offset
     assert full["failed_sources"] == ["OpenAI"]
+    assert full["sources"] == SOURCES
 
 
 def test_missing_values_are_null_not_empty_strings(make_candidate):
@@ -154,6 +156,7 @@ def test_published_sample_follows_the_documented_layout():
     assert sample["schema_version"] == output.SCHEMA_VERSION and sample["status"] in ("ok", "degraded")
     assert type(sample["run_id"]) is int and sample["run_id"] >= 1
     assert sample["stories"] and all(list(story) == STORY_KEYS for story in sample["stories"])
+    assert sample["sources"] and all(list(source) == ["id", "name", "group", "enabled"] for source in sample["sources"])
     assert list(sample["lesson"]) == ["topic_id", "title", "track", "track_name", "series", "lesson"]
     markdown = (examples / "sample-digest.md").read_text(encoding="utf-8")
     assert all(story["url"] in markdown for story in sample["stories"])

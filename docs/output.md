@@ -4,6 +4,9 @@ DailyGrad's public interface is the `dailygrad run` command, its exit code, its 
 output, and the files it writes. An integration needs nothing else: it never has to read
 the SQLite database.
 
+`dailygrad sources`, which chooses the news sources, has its own JSON output and exit
+codes. They are described in [sources.md](sources.md).
+
 ## What a run produces
 
 | Output | Where | Content |
@@ -14,10 +17,13 @@ the SQLite database.
 | Latest digest | `<data_dir>/latest.md` | The same Markdown, always the most recent run. |
 | Latest data | `<data_dir>/latest.json` | The same JSON document as that run's dated JSON file, byte for byte. |
 
+A run reads `<data_dir>/source_preferences.json` if it exists, and never writes it. If the
+file exists but is invalid, the run stops with exit code 2: see [sources.md](sources.md).
+
 `data_dir` is `data` by default. `dailygrad config` prints the absolute paths in use.
 
 All four files are written whenever a run produces a digest, including a degraded run.
-They are not written when a run crashes or the configuration is invalid; the files from
+They are not written when a run crashes or the configuration or source preferences are invalid; the files from
 earlier runs are then left untouched.
 
 Each file is written to a temporary file in the same directory and then renamed over the
@@ -33,7 +39,7 @@ the last run of each day.
 |---|---|---|
 | 0 | The digest was produced normally. `status` is `"ok"`. | Yes |
 | 1 | Degraded: at least one model request failed, so a summary or the lesson is missing. `status` is `"degraded"`. A crash also exits with 1, with a Python traceback on stderr and nothing printed on stdout. | Yes if degraded, no if crashed |
-| 2 | The configuration is invalid, or the command line could not be parsed. | No |
+| 2 | The configuration is invalid, the source preferences file exists but cannot be understood, or the command line could not be parsed. Nothing is fetched. | No |
 
 ## The JSON document
 
@@ -63,6 +69,10 @@ Text fields hold plain text, without Markdown escaping.
     }
   ],
   "failed_sources": [],
+  "sources": [
+    {"id": "openai", "name": "OpenAI", "group": "labs", "enabled": true},
+    {"id": "hacker-news", "name": "Hacker News", "group": "community", "enabled": false}
+  ],
   "lesson": {
     "topic_id": "tf-scaled-attention",
     "title": "Scaled dot-product attention",
@@ -92,6 +102,7 @@ A complete real example is in [`examples/sample-digest.json`](../examples/sample
 | `model` | string | The Ollama model the run was configured to use. |
 | `stories` | array | The digest's stories, in digest order. Empty on a day with no new stories. |
 | `failed_sources` | array of strings | Names of news sources that could not be fetched. A failed source does not make the run degraded. |
+| `sources` | array | Every available news source and whether this run fetched it. See below. Digests written before this key was added do not have it. |
 | `lesson` | object or `null` | The micro-lesson. `null` if lesson generation failed. |
 | `recall` | object or `null` | The recall question shown with the lesson. `null` on days without one, and when `lesson` is `null`. |
 
@@ -107,6 +118,23 @@ A consumer can store the last `run_id` it handled and compare it with the one in
 
 It is not a global identifier: a different data directory, or a data directory that was
 deleted and recreated, starts again from 1. Gaps in the sequence are possible.
+
+### Sources
+
+One entry for each available source, in the order they are fetched. It is the state the
+run used, read once before fetching; a later change to the preferences does not alter a
+digest already written.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `id` | string | The source's stable ID, as used by `dailygrad sources`. |
+| `name` | string | The source's name, as it appears in a story's `source` and in `failed_sources`. |
+| `group` | string or `null` | `"labs"`, `"hugging-face"` or `"community"`; `null` for a feed outside the groups. |
+| `enabled` | boolean | `false` if the source was switched off, so the run did not fetch it. |
+
+`sources` was added to schema version 1 as a new key. Nothing else changed, so a consumer
+that ignores unknown keys is unaffected. To handle digests from before it existed, treat a
+missing `sources` as unknown. Choosing sources is described in [sources.md](sources.md).
 
 ### Story
 

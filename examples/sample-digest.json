@@ -58,6 +58,44 @@
     }
   ],
   "failed_sources": [],
+  "sources": [
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "group": "labs",
+      "enabled": true
+    },
+    {
+      "id": "google-deepmind",
+      "name": "Google DeepMind",
+      "group": "labs",
+      "enabled": true
+    },
+    {
+      "id": "google-research",
+      "name": "Google Research",
+      "group": "labs",
+      "enabled": true
+    },
+    {
+      "id": "hugging-face-blog",
+      "name": "Hugging Face Blog",
+      "group": "hugging-face",
+      "enabled": true
+    },
+    {
+      "id": "hugging-face-daily-papers",
+      "name": "Hugging Face Daily Papers",
+      "group": "hugging-face",
+      "enabled": true
+    },
+    {
+      "id": "hacker-news",
+      "name": "Hacker News",
+      "group": "community",
+      "enabled": true
+    }
+  ],
   "lesson": {
     "topic_id": "nn-tensor-shapes",
     "title": "Tensors, shapes and dimensional reasoning",
