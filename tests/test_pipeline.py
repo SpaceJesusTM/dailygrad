@@ -157,6 +157,11 @@ def table_count(config, table):
     return count
 
 
+def history_files(config):
+    """Every file under the digest directory except the dated pair that each run replaces."""
+    return [path for path in config.digest_dir.rglob("*") if path.is_file() and path.parent != config.digest_dir]
+
+
 def lesson_rows(config):
     conn = sqlite3.connect(config.db_path)
     rows = conn.execute("SELECT topic_id FROM lessons ORDER BY id").fetchall()
@@ -751,6 +756,8 @@ class OllamaServer:
         self.temperatures = []  # the temperature of each chat request
         self.chat_error = None
         self.lesson_crash = None
+        self.script = []  # results for the next chat requests, in order: an exception, a status code, or None for a normal reply
+        self.timeouts = []  # the read timeout each chat request was given
 
     def post(self, url, json=None, timeout=None):
         endpoint = url.removeprefix("http://localhost:11434/api/")
@@ -759,6 +766,12 @@ class OllamaServer:
             kind = next(iter(json["format"]["properties"]))
             self.kinds.append(kind)
             self.temperatures.append(json["options"]["temperature"])
+            self.timeouts.append(timeout[1])
+            scripted = self.script.pop(0) if self.script else None
+            if isinstance(scripted, Exception):
+                raise scripted
+            if scripted:
+                return FakeOllamaResponse({}, status_code=scripted, text="llama runner process no longer running")
             if self.chat_error:
                 raise self.chat_error
             if kind == "lesson" and self.lesson_crash:
@@ -772,10 +785,10 @@ class OllamaServer:
 
 
 class FakeOllamaResponse:
-    status_code = 200
-
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200, text=""):
         self.payload = payload
+        self.status_code = status_code
+        self.text = text
 
     def json(self):
         return self.payload
@@ -818,9 +831,155 @@ def test_model_is_unloaded_when_ollama_requests_fail(config, fake_web, fake_arti
     _, model_ok = pipeline.run(config, now=NOW)
 
     assert not model_ok
-    assert ollama.kinds == ["selected", "lesson"]  # no summaries after a failed selection; the lesson is still tried
-    assert ollama.requests == [("chat", "10m"), ("chat", "10m"), ("generate", 0)]
+    # Each request is tried twice. No summaries after a failed selection; the lesson is still tried.
+    assert ollama.kinds == ["selected", "selected", "lesson", "lesson"]
+    assert ollama.requests == [("chat", "10m")] * 4 + [("generate", 0)]
     assert lesson_rows(config) == []
+
+
+# --- recovery from transient Ollama failures
+
+
+@pytest.mark.parametrize("failure", [500, 503, requests.Timeout("read timed out"), requests.ConnectionError("reset")])
+def test_selection_recovers_from_a_transient_failure_and_every_story_is_summarised(
+    config, fake_web, fake_articles, ollama, failure, model_retries
+):
+    ollama.script = [failure]
+
+    digest, model_ok = pipeline.run(config, now=NOW)
+
+    document = read_latest(config)
+    assert model_ok and document["status"] == "ok"
+    assert ollama.kinds == ["selected", "selected", "what_happened", "what_happened", "what_happened", "lesson"]
+    assert [story["what_happened"] for story in document["stories"]] == ["Something."] * 3
+    assert not any(story["model_failed"] for story in document["stories"])
+    assert document["lesson"] is not None and MODEL_FAILED_NOTE not in digest
+    assert model_retries == [llm.RETRY_PAUSE]  # one short pause in the whole run
+    assert ollama.requests[-1] == ("generate", 0)
+
+
+def test_a_summary_and_the_lesson_also_recover(config, fake_web, fake_articles, ollama):
+    ollama.script = [None, None, 500, None, None, requests.Timeout("read timed out")]
+
+    _, model_ok = pipeline.run(config, now=NOW)
+
+    assert model_ok
+    assert ollama.kinds == ["selected", "what_happened", "what_happened", "what_happened", "what_happened", "lesson", "lesson"]
+    assert lesson_rows(config) == [SCHEDULE[0].id]
+
+
+def test_a_normal_run_makes_no_retry_and_no_pause(config, fake_web, fake_articles, ollama, model_retries):
+    _, model_ok = pipeline.run(config, now=NOW)
+
+    assert model_ok and model_retries == []
+    assert ollama.kinds == ["selected", "what_happened", "what_happened", "what_happened", "lesson"]
+    assert ollama.timeouts == [180] * 5  # each request keeps its full timeout
+
+
+def test_when_recovery_fails_the_digest_is_degraded_headlines_and_nothing_is_invented(
+    config, fake_web, fake_articles, ollama
+):
+    ollama.script = [500] * 20
+
+    digest, model_ok = pipeline.run(config, now=NOW)
+
+    document = read_latest(config)
+    assert not model_ok and document["status"] == "degraded"
+    assert ollama.kinds == ["selected", "selected", "lesson", "lesson"]  # selection twice, then no summaries
+    assert len(document["stories"]) == 3 and all(story["model_failed"] for story in document["stories"])
+    assert all(story["what_happened"] is None and story["why_it_matters"] is None for story in document["stories"])
+    assert document["lesson"] is None and lesson_rows(config) == []
+    assert digest.count(MODEL_FAILED_NOTE) == 3 and NO_LESSON_NOTE in digest
+    assert shown_titles(config) == []  # the stories can return once the model works
+    assert ollama.requests[-1] == ("generate", 0)
+
+
+def test_a_run_never_retries_more_than_three_times(config, fake_web, fake_articles, ollama, model_retries):
+    """Selection succeeds, then every later request fails: three summaries and the lesson share the allowance."""
+    ollama.script = [None] + [500] * 20
+
+    pipeline.run(config, now=NOW)
+
+    assert len(model_retries) == llm.MAX_RETRIES_PER_RUN == 3
+    assert ollama.kinds == ["selected"] + ["what_happened"] * 6 + ["lesson"]  # the lesson had no retry left
+
+
+def test_once_the_budget_is_spent_no_more_pages_are_fetched_and_the_rest_are_left_for_later(
+    config, fake_web, ollama, monkeypatch
+):
+    """Selection answers late. Fetching five pages at up to 30 s each would then overrun the caller's wait."""
+    clock = {"now": 5000.0}
+    fetched = []
+    real_post = ollama.post
+
+    def slow_post(url, json=None, timeout=None):
+        if url.endswith("/chat"):
+            clock["now"] += 150  # every answer takes 150 s
+        return real_post(url, json=json, timeout=timeout)
+
+    def fetch_article_text(url):
+        fetched.append(url)
+        return ARTICLE
+
+    monkeypatch.setattr(requests, "post", slow_post)
+    monkeypatch.setattr(llm, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(articles, "fetch_article_text", fetch_article_text)
+
+    _, model_ok = pipeline.run(config, now=NOW)
+
+    document = read_latest(config)
+    assert not model_ok and ollama.kinds == ["selected", "what_happened", "what_happened"]  # 450 s: three answers
+    assert ollama.timeouts == [180, 180, 150]
+    assert [story["model_failed"] for story in document["stories"]] == [False, False, True]
+    assert len(fetched) <= 2  # nothing was fetched for the story that could not be summarised
+    assert document["lesson"] is None and lesson_rows(config) == []  # retried by the next run
+    assert shown_titles(config) == sorted(story["title"] for story in document["stories"][:2])
+
+
+def test_retries_record_one_run_and_one_archive(config, fake_web, fake_articles, ollama):
+    ollama.script = [requests.Timeout("read timed out"), None, 500]
+
+    pipeline.run(config, now=NOW)
+
+    assert table_count(config, "runs") == 1 and read_latest(config)["run_id"] == 1
+    assert table_count(config, "lessons") == 1 and table_count(config, "summaries") == 3
+    assert sorted(path.suffix for path in history_files(config)) == [".json", ".md"]  # one archived pair
+
+
+def test_a_degraded_run_after_failed_retries_does_not_touch_earlier_archives(config, fake_web, fake_articles, ollama):
+    pipeline.run(config, now=NOW)
+    before = {path: path.read_bytes() for path in history_files(config)}
+
+    ollama.script = [500] * 20
+    _, model_ok = pipeline.run(config, now=NOW + timedelta(minutes=30))
+
+    assert not model_ok and table_count(config, "runs") == 2
+    assert all(path.read_bytes() == content for path, content in before.items())  # the first run's archive is intact
+    assert len(history_files(config)) == len(before) + 2  # and the degraded run has its own
+
+
+def test_the_run_budget_caps_each_request_and_stops_asking_when_it_is_spent(
+    config, fake_web, fake_articles, ollama, monkeypatch
+):
+    """Every request hangs for its whole timeout. The run must still finish inside its budget."""
+    clock = {"now": 5000.0}
+
+    def hang(url, json=None, timeout=None):
+        if url.endswith("/chat"):
+            ollama.timeouts.append(timeout[1])
+            clock["now"] += timeout[1]
+            raise requests.Timeout("read timed out")
+        return FakeOllamaResponse({"done_reason": "unload"})
+
+    monkeypatch.setattr(requests, "post", hang)
+    monkeypatch.setattr(llm, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(llm, "sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
+
+    _, model_ok = pipeline.run(config, now=NOW)
+
+    assert not model_ok and read_latest(config)["status"] == "degraded"
+    assert ollama.timeouts == [180, 180, 88]  # selection twice, then the lesson with what was left of 450 s
+    assert clock["now"] - 5000.0 <= config.run_budget_seconds == 450
 
 
 def test_a_day_without_news_loads_the_model_only_for_the_lesson(config, fake_web, ollama):

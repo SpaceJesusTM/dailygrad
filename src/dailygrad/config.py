@@ -75,6 +75,8 @@ class OllamaConfig:
 class Config:
     data_dir: str = "data"  # relative paths resolve against the working directory
     final_story_count: int = 5  # stories in the digest, when that many candidates are available
+    # Seconds from the start of a run during which model requests may be made or retried.
+    run_budget_seconds: int = 450
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     filter: FilterConfig = field(default_factory=FilterConfig)
     hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
@@ -139,6 +141,8 @@ def load_config(path: Path | None = None) -> Config:
         raise ConfigError("final_story_count must be at least 1")
     if config.filter.shortlist_size < config.final_story_count:
         raise ConfigError("filter.shortlist_size must be at least final_story_count")
+    if config.run_budget_seconds < 1 or config.ollama.timeout_seconds < 1:
+        raise ConfigError("run_budget_seconds and ollama.timeout_seconds must be at least 1")
     if config.hackernews.keyword_boost < 1:
         raise ConfigError("hackernews.keyword_boost must be at least 1")
     return config

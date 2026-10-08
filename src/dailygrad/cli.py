@@ -1,13 +1,13 @@
-"""Command-line interface: `dailygrad run`, `dailygrad config`, `dailygrad sources` and `dailygrad history`."""
+"""Command-line interface: `dailygrad run`, `config`, `sources`, `history` and `reset-story-memory`."""
 
 import argparse
 import json
 import logging
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from dailygrad import __version__, history, pipeline, preferences
+from dailygrad import __version__, db, history, pipeline, preferences
 from dailygrad.config import CONFIG_ENV_VAR, DEFAULT_CONFIG_FILE, Config, ConfigError, find_config_file, load_config
 from dailygrad.sources import ALL, available_sources
 
@@ -28,6 +28,17 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("config", parents=[config_option], help="show the settings a run would use, and where files go")
     add_sources_command(commands, config_option)
     add_history_command(commands, config_option)
+    reset = commands.add_parser(
+        "reset-story-memory",
+        parents=[config_option],
+        help="let stories that were already shown be shown again; history is kept",
+        description="Start story selection afresh: stories shown in earlier digests may be chosen again. "
+        "Runs, archives, summaries and lessons are all kept, and duplicate prevention carries on from the "
+        "next run. Without --confirm this only shows what would happen.",
+    )
+    how = reset.add_mutually_exclusive_group()
+    how.add_argument("--dry-run", action="store_true", help="show what a reset would do and change nothing (the default)")
+    how.add_argument("--confirm", action="store_true", help="perform the reset")
     args = parser.parse_args(argv)
     config_path = getattr(args, "config", None)
 
@@ -50,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         return sources_command(config, args.action or "list", getattr(args, "names", []), getattr(args, "json", False))
     if args.command == "history":
         return history_command(config, args)
+    if args.command == "reset-story-memory":
+        return reset_story_memory_command(config, args.confirm)
 
     try:
         digest, model_ok = pipeline.run(config)
@@ -128,6 +141,40 @@ def sources_command(config: Config, action: str, names: list[str], as_json: bool
             print("Saved. The change applies from the next run; today's digest is not regenerated.")
         else:
             print("Nothing to change.")
+    return 0
+
+
+def reset_story_memory_command(config: Config, confirmed: bool) -> int:
+    """Preview a story-memory reset, or perform it when confirmed. Exits with 1 if the database cannot be used."""
+    path = config.db_path
+    try:
+        memory = db.story_memory(path)
+        print(f"Database:            {path.resolve()}")
+        if not memory["exists"]:
+            print("There is no database yet, so there is no story memory to reset. Nothing was changed.")
+            return 0
+        print(f"Runs recorded:       {memory['runs']}")
+        print(f"Earlier resets:      {memory['resets']}" + (f" (last {memory['last_reset_at']})" if memory["resets"] else ""))
+        print(f"Stories remembered:  {memory['remembered']} (shown already, so held back from future digests)")
+        print()
+        if not memory["remembered"]:
+            print("No story is being held back, so there is nothing to reset. Nothing was changed.")
+            return 0
+        if not confirmed:
+            print(f"A reset would let those {memory['remembered']} stories be chosen again if a source still offers them.")
+            print("It keeps every run, archive, summary and lesson, and the curriculum carries on where it is.")
+            print("Dry run: nothing was changed. To reset, run: dailygrad reset-story-memory --confirm")
+            return 0
+        conn = db.connect(path)
+        try:
+            freed = db.reset_story_memory(conn, datetime.now(timezone.utc))
+        finally:
+            conn.close()
+    except (db.sqlite3.Error, OSError) as exc:
+        print(f"dailygrad: cannot use the database {path}: {exc}", file=sys.stderr)
+        return 1
+    print(f"Story memory reset: {freed} stories may be shown again. A story shown from now on is not repeated.")
+    print("Every run, archive, summary and lesson was kept. No digest was generated.")
     return 0
 
 

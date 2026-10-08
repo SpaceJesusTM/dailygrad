@@ -236,6 +236,38 @@ at all, the digest lists the top candidates as headlines.
 A story whose page cannot be fetched is listed as a headline without a summary. That is
 not counted as a failure.
 
+### Resetting story memory
+
+DailyGrad never shows a story twice. To start that memory afresh, for example after test
+runs used up the current news:
+
+```sh
+dailygrad reset-story-memory             # preview: how many stories would be freed; changes nothing
+dailygrad reset-story-memory --confirm   # do it
+```
+
+After a reset, stories shown earlier can be chosen again if a source still offers them.
+From the next run on, duplicate prevention works as before: a story shown after the reset
+is not repeated.
+
+Nothing is deleted. Every run, archived digest, summary and lesson is kept, and the
+curriculum carries on where it is. The reset is one new row in the database marking where
+the fresh memory starts; a story shown again keeps its original record and gains a second
+one. It never happens by itself, and it does not generate a digest.
+
+### When Ollama is slow or fails
+
+A model request that times out, loses its connection, or gets HTTP 500, 502, 503 or 504
+from Ollama is tried once more after two seconds. That includes the first request, which
+chooses the stories, so one bad start no longer costs every summary. Errors that a retry
+cannot fix, such as a missing model, are not retried. A run makes at most three retries.
+
+A run also has a time budget, `run_budget_seconds`, 450 by default and counted from the
+start of the run. No model request may outlast it, and once it is spent the model is not
+asked again: the run finishes as a degraded digest with whatever it has. A run therefore
+ends within about a minute of the budget even if Ollama hangs on every request. With the
+defaults that is under nine minutes.
+
 ## Configuration
 
 DailyGrad works with no config file. To change something, copy
@@ -303,7 +335,7 @@ model = "<model>"
 ```
 
 Larger models write better summaries and are slower. If requests time out, raise
-`timeout_seconds`. The endpoint can also point at Ollama on another machine through `url`.
+`timeout_seconds`, and `run_budget_seconds` with it. The endpoint can also point at Ollama on another machine through `url`.
 DailyGrad has been tested with the default model only.
 
 ## Hardware

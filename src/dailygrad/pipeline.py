@@ -27,6 +27,7 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
     The curriculum advances once per calendar day: a rerun on the same day shows that day's
     lesson again instead of generating the next one.
     """
+    llm.begin_run(config.run_budget_seconds)  # the budget covers fetching too, so it bounds the whole run
     now = now or datetime.now(timezone.utc)
     today = now.astimezone().date()  # the digest is dated in local time
 
@@ -79,6 +80,7 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
         "%d candidates fetched, %d shortlisted, %d in digest, saved to %s",
         len(candidates), len(shortlist), len(stories), digest_path,
     )  # fmt: skip
+    log.info(llm.usage())
     failures = sum(story.model_failed for story in stories)
     if failures:
         log.error("the model failed on %d of %d stories; they were not recorded as shown", failures, len(stories))

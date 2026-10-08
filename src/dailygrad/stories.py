@@ -130,6 +130,9 @@ def summarize(candidate: Candidate, config: OllamaConfig) -> Story:
     A story the model failed on is flagged, so it can be retried in a later run. A story with
     no usable text is not flagged: the model was never asked, and retrying would not help.
     """
+    if llm.out_of_time():  # do not spend time fetching a page the model can no longer be asked about
+        log.error("could not summarise %s: the run's time budget is used up", candidate.url)
+        return Story(candidate, model_failed=True)
     text, evidence = gather_evidence(candidate)
     if not text:
         log.warning("no usable text for %s, listing it without a summary", candidate.url)

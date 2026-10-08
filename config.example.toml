@@ -18,6 +18,12 @@ data_dir = "data"
 # How many news stories a digest shows. If fewer candidates are available, it shows those.
 final_story_count = 5
 
+# Seconds from the start of a run during which the model may be asked, or asked again after
+# a transient failure. Once they are used up the run finishes with what it has, so a stuck
+# Ollama cannot hold a run (or a caller waiting for it) indefinitely. A run can end up to
+# about a minute later than this. Raise it together with ollama.timeout_seconds on slow hardware.
+run_budget_seconds = 450
+
 # The local model, served by Ollama. Any Ollama model that supports structured
 # (JSON schema) output works; pull it first with `ollama pull <model>`.
 [ollama]
@@ -29,6 +35,7 @@ temperature = 0.2
 # Ask thinking-capable models to answer directly.
 think = false
 # Time allowed for one model request. Raise it for large models or CPU-only machines.
+# A request that times out, or fails with HTTP 500, 502, 503 or 504, is tried once more.
 timeout_seconds = 180
 
 [filter]

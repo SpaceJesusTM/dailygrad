@@ -162,3 +162,170 @@ def test_phase_2_database_gains_the_lesson_tables(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM runs").fetchone() == (1,)  # existing history is kept
     assert db.lesson_history(conn) == [] and db.recall_history(conn) == []
     conn.close()
+
+
+# --- story-memory resets
+
+
+def show(conn, candidates, minutes=0, summaries=None):
+    """Record a run that showed `candidates`, summarised as `summaries` says. Returns the run ID."""
+    when = NOW + timedelta(minutes=minutes)
+    stories = [Story(c, *(summaries or {}).get(c.title, ())) for c in candidates]
+    with conn:
+        db.record_seen(conn, candidates, when)
+        run_id = db.record_run(conn, when.date(), "digest.md", candidates, when)
+        db.record_summaries(conn, run_id, stories, "test-model", when)
+    return run_id
+
+
+def rows(conn, sql):
+    return conn.execute(sql).fetchall()
+
+
+def test_reset_makes_shown_stories_eligible_and_new_showings_are_remembered_again(conn, make_candidate):
+    old, other = make_candidate("Old story"), make_candidate("Other story")
+    show(conn, [old, other])
+    assert db.was_shown(conn, old) and db.was_shown(conn, other)
+
+    assert db.reset_story_memory(conn, NOW) == 2
+    assert not db.was_shown(conn, old) and not db.was_shown(conn, other)
+
+    show(conn, [old], minutes=10)
+    assert db.was_shown(conn, old)  # shown again, so excluded again
+    assert not db.was_shown(conn, other)  # still free until it is shown
+
+
+def test_reset_keeps_every_earlier_record(conn, make_candidate):
+    story = make_candidate("Old story")
+    first = show(conn, [story], summaries={"Old story": ("First summary.", "First reason.", "article")})
+    with conn:
+        db.record_lesson(conn, first, Lesson(make_topic("nn-backprop"), "A lesson."), "test-model", NOW)
+    before = {table: rows(conn, f"SELECT * FROM {table}") for table in ("runs", "items", "summaries", "lessons", "recalls")}
+
+    db.reset_story_memory(conn, NOW)
+
+    assert {table: rows(conn, f"SELECT * FROM {table}") for table in before} == before
+    assert rows(conn, "SELECT after_run_id FROM story_resets") == [(first,)]
+    assert db.lesson_history(conn) == ["nn-backprop"]  # the curriculum is where it was
+
+
+def test_a_story_shown_again_keeps_its_first_showing_and_gains_a_second_with_its_own_summary(conn, make_candidate):
+    story = make_candidate("Old story")
+    first = show(conn, [story], summaries={"Old story": ("First summary.", "First reason.", "article")})
+    db.reset_story_memory(conn, NOW)
+
+    second = show(conn, [story], minutes=10, summaries={"Old story": ("Second summary.", "Second reason.", "excerpt")})
+
+    assert rows(conn, "SELECT shown_run_id FROM items") == [(first,)]  # the original association is untouched
+    assert rows(conn, "SELECT run_id, what_happened, evidence FROM summaries") == [(first, "First summary.", "article")]
+    assert rows(conn, "SELECT run_id, what_happened, why_it_matters, evidence, model FROM repeat_showings") == [
+        (second, "Second summary.", "Second reason.", "excerpt", "test-model")
+    ]
+
+
+def test_a_story_can_be_shown_once_in_every_epoch(conn, make_candidate):
+    story = make_candidate("Old story")
+    runs = [show(conn, [story])]
+    for number in (1, 2):
+        assert db.reset_story_memory(conn, NOW) == 1
+        runs.append(show(conn, [story], minutes=number, summaries={"Old story": (f"Summary {number}.", "Why.", "article")}))
+        assert db.was_shown(conn, story)
+
+    assert rows(conn, "SELECT run_id, what_happened FROM repeat_showings ORDER BY run_id") == [
+        (runs[1], "Summary 1."), (runs[2], "Summary 2."),
+    ]  # fmt: skip
+    assert rows(conn, "SELECT after_run_id FROM story_resets ORDER BY id") == [(runs[0],), (runs[1],)]
+
+
+def test_a_repeat_showing_without_a_summary_is_still_remembered(conn, make_candidate):
+    story = make_candidate("Headline only")
+    show(conn, [story])
+    db.reset_story_memory(conn, NOW)
+
+    run_id = show(conn, [story], minutes=10)  # no usable text, so listed without a summary
+
+    assert rows(conn, "SELECT run_id, what_happened, model FROM repeat_showings") == [(run_id, None, None)]
+    assert db.was_shown(conn, story)
+
+
+def test_a_story_the_model_failed_on_after_a_reset_stays_eligible(conn, make_candidate):
+    story = make_candidate("Old story")
+    show(conn, [story])
+    db.reset_story_memory(conn, NOW)
+
+    when = NOW + timedelta(minutes=10)
+    with conn:  # what the pipeline does for a failed summary: seen, but not among the shown
+        db.record_seen(conn, [story], when)
+        run_id = db.record_run(conn, when.date(), "digest.md", [], when)
+        db.record_summaries(conn, run_id, [Story(story, model_failed=True)], "test-model", when)
+
+    assert not db.was_shown(conn, story) and rows(conn, "SELECT * FROM repeat_showings") == []
+
+
+def test_after_a_reset_a_repost_with_the_same_title_is_matched_only_against_new_showings(conn, make_candidate):
+    show(conn, [make_candidate("Model X released", url="https://lab.example/model-x")])
+    repost = make_candidate("Model X released", url="https://mirror.example/model-x")
+    assert db.was_shown(conn, repost)
+
+    db.reset_story_memory(conn, NOW)
+    assert not db.was_shown(conn, repost)
+
+    show(conn, [repost], minutes=10)
+    assert db.was_shown(conn, make_candidate("Model X released", url="https://third.example/model-x"))
+    assert rows(conn, "SELECT * FROM repeat_showings") == []  # a different item's first showing, not a repeat
+
+
+def test_reset_with_nothing_remembered_writes_nothing(conn, make_candidate):
+    assert db.reset_story_memory(conn, NOW) == 0
+
+    show(conn, [make_candidate("Old story")])
+    assert db.reset_story_memory(conn, NOW) == 1
+    assert db.reset_story_memory(conn, NOW) == 0  # a second reset in a row has nothing to free
+
+    assert len(rows(conn, "SELECT * FROM story_resets")) == 1
+
+
+def test_a_database_from_before_resets_gains_the_tables_and_keeps_its_memory(tmp_path, make_candidate):
+    """An existing database has neither new table. Connecting adds them, empty: no reset happens by itself."""
+    path = tmp_path / "old.db"
+    old_schema = db.SCHEMA.split("-- A story-memory reset.")[0] + "-- One row per micro-lesson shown." + db.SCHEMA.split("-- One row per micro-lesson shown.")[1]
+    assert "story_resets" not in old_schema and "repeat_showings" not in old_schema
+    old = sqlite3.connect(path)
+    old.executescript(old_schema)
+    old.execute("INSERT INTO runs VALUES (1, '2026-10-06', '2026-10-06T07:00:00+00:00', 'digest.md')")
+    story = make_candidate("Old story")
+    old.execute(
+        "INSERT INTO items VALUES (1, ?, ?, 'Hacker News', 'Old story', ?, '2026-10-06T07:00:00+00:00', 1)",
+        (story.url_key, story.title_key, story.url),
+    )
+    old.execute("INSERT INTO summaries VALUES (1, 1, 'Old summary.', 'Old reason.', 'article', 'old-model', '2026-10-06')")
+    old.commit()
+    old.close()
+    assert db.story_memory(path) == {
+        "exists": True, "remembered": 1, "runs": 1, "last_run_id": 1, "resets": 0, "last_reset_at": None,
+    }  # fmt: skip
+
+    conn = db.connect(path)
+    assert db.was_shown(conn, story) and db.story_epoch(conn) == 0  # upgrading resets nothing
+    assert rows(conn, "SELECT * FROM story_resets") == [] and rows(conn, "SELECT * FROM repeat_showings") == []
+
+    db.reset_story_memory(conn, NOW)
+    second = show(conn, [story], minutes=10, summaries={"Old story": ("New summary.", "New reason.", "article")})
+
+    assert rows(conn, "SELECT run_id, what_happened, model FROM summaries") == [(1, "Old summary.", "old-model")]
+    assert rows(conn, "SELECT run_id, what_happened FROM repeat_showings") == [(second, "New summary.")]
+    conn.close()
+
+
+def test_story_memory_reads_without_creating_or_changing_anything(tmp_path, make_candidate):
+    assert db.story_memory(tmp_path / "missing.db")["exists"] is False
+    assert not (tmp_path / "missing.db").exists()
+
+    path = tmp_path / "test.db"
+    conn = db.connect(path)
+    show(conn, [make_candidate("One"), make_candidate("Two")])
+    conn.close()
+    before = path.read_bytes()
+
+    assert db.story_memory(path)["remembered"] == 2
+    assert path.read_bytes() == before

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import requests
 
-from dailygrad import db
+from dailygrad import db, llm
 from dailygrad.models import Candidate
 
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
@@ -19,6 +19,15 @@ def no_network(monkeypatch):
 
     monkeypatch.setattr(requests.Session, "request", blocked)
     monkeypatch.setattr(socket, "getaddrinfo", blocked)
+
+
+@pytest.fixture(autouse=True)
+def model_retries(monkeypatch):
+    """Each test starts with no run budget and a full retry allowance, and retry pauses take no time."""
+    pauses = []
+    monkeypatch.setattr(llm, "_run", llm._Run())
+    monkeypatch.setattr(llm, "sleep", pauses.append)
+    return pauses
 
 
 @pytest.fixture

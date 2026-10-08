@@ -1,4 +1,11 @@
-"""SQLite history: news items seen and shown, their summaries, digest runs, lessons and recall questions."""
+"""SQLite history: news items seen and shown, their summaries, digest runs, lessons and recall questions.
+
+A story is not shown twice. "Shown" is judged within the current story-memory epoch: a row
+in story_resets starts a new epoch, after which stories shown earlier may be shown again.
+Nothing is deleted or rewritten by a reset. An item's first showing stays where it always
+was (items.shown_run_id and summaries); a later showing of the same item is a row in
+repeat_showings.
+"""
 
 import sqlite3
 from datetime import date, datetime
@@ -38,6 +45,27 @@ CREATE TABLE IF NOT EXISTS summaries (
     evidence TEXT NOT NULL,  -- 'article', 'abstract' or 'excerpt'
     model TEXT NOT NULL,
     created_at TEXT NOT NULL
+);
+
+-- A story-memory reset. Showings in runs up to and including after_run_id no longer stop a
+-- story from being shown again; the newest row is the one in force.
+CREATE TABLE IF NOT EXISTS story_resets (
+    id INTEGER PRIMARY KEY,
+    reset_at TEXT NOT NULL,
+    after_run_id INTEGER NOT NULL  -- the newest run when the reset was made, 0 if there was none
+);
+
+-- An item shown again after a reset, with the summary written for that showing (NULL if it
+-- was listed without one). The item's first showing is never moved here.
+CREATE TABLE IF NOT EXISTS repeat_showings (
+    item_id INTEGER NOT NULL REFERENCES items(id),
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    what_happened TEXT,
+    why_it_matters TEXT,
+    evidence TEXT,
+    model TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (item_id, run_id)
 );
 
 -- One row per micro-lesson shown. Curriculum progress is derived from this table alone.
@@ -81,12 +109,73 @@ def recorded_runs(path: Path) -> list[tuple[int, str, str]]:
         conn.close()
 
 
+# Items shown in the current epoch, i.e. in a run after the newest reset. `:epoch` is that reset's run.
+SHOWN_SINCE = "(shown_run_id > :epoch OR id IN (SELECT item_id FROM repeat_showings WHERE run_id > :epoch))"
+
+
+def story_epoch(conn: sqlite3.Connection) -> int:
+    """The run ID the newest story-memory reset was made after, or 0 if there has been no reset."""
+    (epoch,) = conn.execute(
+        "SELECT COALESCE((SELECT after_run_id FROM story_resets ORDER BY id DESC LIMIT 1), 0)"
+    ).fetchone()
+    return epoch
+
+
 def was_shown(conn: sqlite3.Connection, candidate: Candidate) -> bool:
+    """Whether this story, by URL or by title, has been shown since the last story-memory reset."""
     row = conn.execute(
-        "SELECT 1 FROM items WHERE shown_run_id IS NOT NULL AND (url_key = ? OR title_key = ?) LIMIT 1",
-        (candidate.url_key, candidate.title_key),
+        f"SELECT 1 FROM items WHERE (url_key = :url OR title_key = :title) AND {SHOWN_SINCE} LIMIT 1",
+        {"url": candidate.url_key, "title": candidate.title_key, "epoch": story_epoch(conn)},
     ).fetchone()
     return row is not None
+
+
+def story_memory(path: Path) -> dict:
+    """What a story-memory reset would affect, read without creating or changing the database.
+
+    `remembered` is the number of stories currently held back from being shown again.
+    """
+    empty = {"exists": False, "remembered": 0, "runs": 0, "last_run_id": 0, "resets": 0, "last_reset_at": None}
+    if not path.is_file():
+        return empty
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        tables = {name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if not {"runs", "items"} <= tables:
+            return empty | {"exists": True}
+        runs, last_run_id = conn.execute("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM runs").fetchone()
+        resets, last_reset_at, epoch = 0, None, 0
+        if "story_resets" in tables:  # a database from before resets existed has neither table
+            (resets,) = conn.execute("SELECT COUNT(*) FROM story_resets").fetchone()
+            if resets:
+                last_reset_at, epoch = conn.execute(
+                    "SELECT reset_at, after_run_id FROM story_resets ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+        shown = SHOWN_SINCE if "repeat_showings" in tables else "shown_run_id > :epoch"
+        (remembered,) = conn.execute(f"SELECT COUNT(*) FROM items WHERE {shown}", {"epoch": epoch}).fetchone()
+    finally:
+        conn.close()
+    return {
+        "exists": True, "remembered": remembered, "runs": runs, "last_run_id": last_run_id,
+        "resets": resets, "last_reset_at": last_reset_at,
+    }  # fmt: skip
+
+
+def reset_story_memory(conn: sqlite3.Connection, now: datetime) -> int:
+    """Start a new story-memory epoch: stories shown so far may be shown again. Returns how many that frees.
+
+    Only a row in story_resets is added. With nothing to free, nothing is written.
+    """
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")  # a run recording at this moment finishes first, and is then included
+        epoch = story_epoch(conn)
+        (freed,) = conn.execute(f"SELECT COUNT(*) FROM items WHERE {SHOWN_SINCE}", {"epoch": epoch}).fetchone()
+        if freed:
+            conn.execute(
+                "INSERT INTO story_resets (reset_at, after_run_id) SELECT ?, COALESCE(MAX(id), 0) FROM runs",
+                (now.isoformat(),),
+            )
+    return freed
 
 
 def record_seen(conn: sqlite3.Connection, candidates: list[Candidate], now: datetime) -> None:
@@ -100,12 +189,22 @@ def record_seen(conn: sqlite3.Connection, candidates: list[Candidate], now: date
 def record_run(
     conn: sqlite3.Connection, run_date: date, digest_path: Path, shown: list[Candidate], now: datetime
 ) -> int:
-    """Record a digest run and mark the items it showed. Items must already be recorded as seen."""
+    """Record a digest run and mark the items it showed. Items must already be recorded as seen.
+
+    An item shown for the first time gets this run as its shown_run_id. One that was shown
+    before (possible only after a story-memory reset) keeps its original run and gets a row
+    in repeat_showings for this one.
+    """
     cursor = conn.execute(
         "INSERT INTO runs (run_date, created_at, digest_path) VALUES (?, ?, ?)",
         (run_date.isoformat(), now.isoformat(), str(digest_path)),
     )
     run_id = cursor.lastrowid
+    conn.executemany(  # before the UPDATE below, so only items that already had a showing match
+        "INSERT INTO repeat_showings (item_id, run_id, created_at)"
+        " SELECT id, ?, ? FROM items WHERE url_key = ? AND shown_run_id IS NOT NULL",
+        [(run_id, now.isoformat(), c.url_key) for c in shown],
+    )
     conn.executemany(
         "UPDATE items SET shown_run_id = ? WHERE url_key = ? AND shown_run_id IS NULL",
         [(run_id, c.url_key) for c in shown],
@@ -114,15 +213,24 @@ def record_run(
 
 
 def record_summaries(conn: sqlite3.Connection, run_id: int, stories: list[Story], model: str, now: datetime) -> None:
-    """Save the summaries of a run's stories. Items must already be recorded as seen."""
+    """Save the summaries of a run's stories. Call after record_run; items must already be recorded as seen.
+
+    An item's first summary is never replaced. The summary of a repeat showing goes on its
+    repeat_showings row.
+    """
+    summarised = [s for s in stories if s.what_happened]
+    conn.executemany(
+        "UPDATE repeat_showings SET what_happened = ?, why_it_matters = ?, evidence = ?, model = ?"
+        " WHERE run_id = ? AND item_id = (SELECT id FROM items WHERE url_key = ?)",
+        [(s.what_happened, s.why_it_matters, s.evidence, model, run_id, s.candidate.url_key) for s in summarised],
+    )
     conn.executemany(
         "INSERT INTO summaries (item_id, run_id, what_happened, why_it_matters, evidence, model, created_at)"
-        " SELECT id, ?, ?, ?, ?, ?, ? FROM items WHERE url_key = ?"
+        " SELECT id, ?, ?, ?, ?, ?, ? FROM items WHERE url_key = ? AND shown_run_id = ?"
         " ON CONFLICT(item_id) DO NOTHING",
         [
-            (run_id, s.what_happened, s.why_it_matters, s.evidence, model, now.isoformat(), s.candidate.url_key)
-            for s in stories
-            if s.what_happened
+            (run_id, s.what_happened, s.why_it_matters, s.evidence, model, now.isoformat(), s.candidate.url_key, run_id)
+            for s in summarised
         ],
     )
 

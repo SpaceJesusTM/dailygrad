@@ -120,3 +120,16 @@ def test_example_config_is_valid_and_matches_the_built_in_defaults():
     example = Path(__file__).parent.parent / "config.example.toml"
 
     assert load_config(example) == Config()
+
+
+def test_run_budget_default_override_and_validation(tmp_path):
+    assert Config().run_budget_seconds == 450
+
+    path = tmp_path / "dailygrad.toml"
+    path.write_text("run_budget_seconds = 900\n")
+    assert load_config(path).run_budget_seconds == 900
+
+    for text in ("run_budget_seconds = 0\n", "[ollama]\ntimeout_seconds = 0\n"):
+        path.write_text(text)
+        with pytest.raises(ConfigError, match="must be at least 1"):
+            load_config(path)

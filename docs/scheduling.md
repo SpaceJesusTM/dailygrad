@@ -10,6 +10,10 @@ Any scheduler can run it. Three things matter for all of them:
 - **Check the exit code.** 0 is a normal digest, 1 is a degraded digest or a crash, 2 is a
   configuration error or a damaged source preferences file. See [output.md](output.md).
 
+A run is bounded in time. Model requests stop `run_budget_seconds` (450 by default) after
+the run starts, and the run then ends within about a minute, so a scheduler's own timeout
+can be set a little above that. See "When Ollama is slow or fails" in the README.
+
 Running more than once a day is safe: stories are not repeated, and the micro-lesson stays
 the same until the next calendar day.
 
