@@ -131,7 +131,7 @@ def leetcode_document(exercise: Exercise | None, with_reference: bool = True) ->
         "url": problem.url,
         "difficulty": problem.difficulty,
         "premium": problem.premium,
-        "track": exercise.track,  # the track whose day it was
+        "track": exercise.track,  # the track whose turn it was
         "review": exercise.review,
         "sources": [
             {"id": source.id, "name": source.name, "kind": source.kind, "publisher": source.publisher}
@@ -146,6 +146,12 @@ def leetcode_document(exercise: Exercise | None, with_reference: bool = True) ->
         "hints_enabled": exercise.hints_on,
         "hint": exercise.shown_hint or None,
         "hint_source": (exercise.hint_source or None) if exercise.shown_hint else None,
+        # The exercise is kept until the user completes or skips it, so a digest may show it again.
+        "exercise_id": exercise.assignment_id,  # names this assignment of the problem: what to complete or skip
+        "assigned_on": exercise.assigned_on,  # the day a digest first showed it
+        "day": exercise.day,  # how many days it has been shown, this one included
+        "is_carryover": exercise.day > 1,  # shown on an earlier day too: not a newly assigned exercise
+        "awaiting_completion": exercise.outcome is None,  # false once completed or skipped
     }
     if with_reference:
         document["reference_solution"] = reference_solution(problem)  # the answer: never to be displayed unasked

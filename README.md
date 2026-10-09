@@ -288,17 +288,23 @@ The company lists are a third party's tags, and a digest credits them as such: "
 frequency figures are not kept, because they are not the chance of meeting a problem in an
 interview.
 
-Which problem a day gets is deterministic:
+An exercise is yours until you end it. Each day's digest shows the current exercise again,
+marked "Still in progress", until you say you are finished with it or ask to move on (see
+[Finishing an exercise](#finishing-an-exercise)). Only then is the next one chosen, and
+which one that is, is deterministic:
 
-- The tracks take turns, one a day: NeetCode 150, AMD, Vanguard, and round again. The turn
-  moves on with each exercise shown, so a day without a run does not skip a track.
+- The tracks take turns, one exercise each: NeetCode 150, AMD, Vanguard, and round again.
+  An exercise takes one turn however many days it is shown, and a day without a run skips
+  nothing.
 - Each track goes through its own problems: the easy ones first, then medium, then hard, and
   within each difficulty topic by topic, from arrays and hashing to bit manipulation.
 - A problem that another track has already shown is passed over while the track has new ones.
-- When a track has nothing new left, its day shows a review instead of being dropped: the
-  problem shown least often, with those you marked `needs-review` first. Nothing is deleted
-  to make that possible.
-- Running again on the same day shows that day's exercise again.
+- When a track has nothing new left, its turn is a review instead of being dropped: the
+  problem assigned least often, with those you marked `needs-review` first. Nothing is
+  deleted to make that possible. A review is a new exercise: having completed the problem
+  before does not finish it.
+- Running again on the same day shows that day's exercise again, even if you have ended it
+  since.
 
 The statement, the example and the constraints are printed from the catalog as written, so
 the model cannot change the question. The topic is not shown, because naming it names the
@@ -323,6 +329,28 @@ answer. What it writes is still checked: a hint that contains one of the problem
 words, states a complexity or includes code is discarded for the catalog's hint. So is a
 hint when Ollama cannot be reached. `model_hints = false` under `[leetcode]` in the config
 file prints the catalog's hint every time.
+
+### Finishing an exercise
+
+```sh
+dailygrad leetcode mark complete      # finished with it: the next digest brings the next exercise
+dailygrad leetcode next               # move on now: skips it, and prints the next exercise
+```
+
+Both are yours to use whenever you like. Neither asks whether you attempted the problem,
+answered correctly or wrote any code, and nothing else ends an exercise: not a hint, not a
+correct answer, not reading the reference approach, not a mark.
+
+- `mark complete` records the exercise as **completed**. It chooses nothing: the next
+  scheduled digest assigns the next exercise, from the next track.
+- `next` assigns the next exercise at once and prints it, without the answer. The exercise
+  you left is recorded as **skipped**, unless you had completed it. No digest is written:
+  today's stays as it is, and tomorrow's shows the new exercise.
+
+Completed and skipped are counted separately, and neither is "solved in code". Each moves
+the rotation on by exactly one exercise. With `--exercise ID` (the number `dailygrad
+leetcode` shows) either command acts only if that is still the current exercise, so a
+repeated or late request cannot end a different one.
 
 ### Following up
 
@@ -358,11 +386,13 @@ the answer.
 Being shown a problem, attempting it, feeling comfortable with it and having solved it in
 code are four separate things. A showing is recorded by the run, an attempt by an answer
 that describes an approach. `comfortable`, `needs-review` and `solved` are only ever set by
-`dailygrad leetcode mark`.
+`dailygrad leetcode mark`. Being finished with an exercise is a fifth, set only by
+`mark complete`: marking a problem `solved` does not end the exercise, and completing an
+exercise does not mark its problem solved.
 
 Every command takes `--json` for another program, and `hint`, `answer`, `review` and `mark`
-take `--problem ID` to follow up on an earlier exercise. None of them chooses a problem,
-moves the rotation or writes a digest.
+take `--problem ID` to follow up on an earlier exercise. None of them writes a digest, and
+only `next` chooses a problem or moves the rotation.
 After a reply the model stays loaded for five minutes, so that a follow-up is quick, and
 Ollama then frees it; `keep_alive_seconds = 0` frees it at once.
 [`docs/leetcode.md`](docs/leetcode.md) has the catalog, the JSON of each command and what an
@@ -484,7 +514,7 @@ Ollama model:       qwen3.5:4b-q4_K_M
 Stories per digest: 5, chosen from up to 25 candidates
 Sources:            OpenAI, Google DeepMind, Google Research, Anthropic News, Meta AI Research, NVIDIA Developer Blog, Mistral AI News, Microsoft Research, Hugging Face Blog, Hugging Face Daily Papers, Hacker News
 Source preferences: /home/you/dailygrad/data/source_preferences.json
-LeetCode:           one exercise a day, rotating neetcode-150 -> amd -> vanguard; hints on
+LeetCode:           one exercise at a time, kept until completed or skipped, rotating neetcode-150 -> amd -> vanguard; hints on
 LeetCode settings:  /home/you/dailygrad/data/leetcode_preferences.json
 ```
 

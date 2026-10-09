@@ -94,7 +94,7 @@ class OllamaConfig:
 @dataclass
 class LeetCodeConfig:
     enabled: bool = True
-    # One track per day, repeating. A track may be left out or listed more than once.
+    # One track per exercise, repeating. A track may be left out or listed more than once.
     rotation: list[str] = field(default_factory=lambda: list(LEETCODE_TRACKS))
     model_hints: bool = True  # the model words the digest's hint; false prints the catalog's hint as written
     feedback_budget_seconds: int = 120  # for one `dailygrad leetcode answer` or `review`

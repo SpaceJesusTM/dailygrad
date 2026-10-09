@@ -106,7 +106,7 @@ def leetcode_summary(config: Config) -> str:
     if not config.leetcode.enabled:
         return "off"
     hints = "on" if leetcode.read_hints(config.leetcode_preferences_path)[0] else "off"
-    return f"one exercise a day, rotating {' -> '.join(config.leetcode.rotation)}; hints {hints}"
+    return f"one exercise at a time, kept until completed or skipped, rotating {' -> '.join(config.leetcode.rotation)}; hints {hints}"
 
 
 def add_sources_command(commands, config_option: argparse.ArgumentParser) -> None:
@@ -310,14 +310,20 @@ def add_leetcode_command(commands, config_option: argparse.ArgumentParser) -> No
         "--problem", default=argparse.SUPPRESS, metavar="ID",
         help="a problem shown earlier, by its ID, instead of the current exercise",
     )  # fmt: skip
+    exercise_option = argparse.ArgumentParser(add_help=False)
+    exercise_option.add_argument(
+        "--exercise", default=argparse.SUPPRESS, metavar="ID",
+        help="for `mark complete` and `next`: act only if this is still the current exercise (its ID, from `status`)",
+    )  # fmt: skip
     options = [config_option, json_option]
     follow_up = [*options, problem_option]
     command = commands.add_parser(
         "leetcode",
         parents=options,
-        help="the daily LeetCode exercise: its state, hints, and feedback on your approach",
-        description="Follow up on the daily LeetCode exercise. None of these commands chooses a problem or "
-        "writes a digest: a run does that, once a day. An answer is read from standard input.",
+        help="the current LeetCode exercise: its state, hints, feedback on your approach, and moving on from it",
+        description="Follow up on the current LeetCode exercise. It is shown in each day's digest until you end it: "
+        "`mark complete` when you are finished with it, or `next` to move on now. None of these commands "
+        "writes a digest, and only `next` chooses a problem. An answer is read from standard input.",
     )
     actions = command.add_subparsers(dest="action")
     actions.add_parser("status", parents=options, help="the current exercise, the rotation and your progress (the default)")
@@ -328,13 +334,21 @@ def add_leetcode_command(commands, config_option: argparse.ArgumentParser) -> No
         "answer", parents=follow_up, help="feedback from the local model on your approach, read from standard input"
     )
     actions.add_parser("review", parents=follow_up, help="the reference approach and its complexity: this shows the answer")
-    mark = actions.add_parser("mark", parents=follow_up, help="record what you say of the problem; `solved` means in code")
-    mark.add_argument("state", choices=tutor.MARKS)
+    mark = actions.add_parser(
+        "mark", parents=[*follow_up, exercise_option],
+        help="record what you say of the problem (`solved` means in code), or `complete` to finish the exercise",
+    )  # fmt: skip
+    mark.add_argument("state", choices=(*tutor.MARKS, "complete"))
+    actions.add_parser(
+        "next", parents=[*follow_up, exercise_option],
+        help="move on to the next exercise now: the current one is recorded as skipped unless you completed it",
+    )  # fmt: skip
 
 
 def leetcode_command(config: Config, args: argparse.Namespace) -> int:
     """Carry out one `dailygrad leetcode` action. Exits with 2 if the request is refused, 1 if it failed."""
     action, as_json, problem = args.action or "status", getattr(args, "json", False), getattr(args, "problem", None)
+    exercise = getattr(args, "exercise", None)
     try:
         if action == "status":
             result = tutor.status(config)
@@ -346,6 +360,12 @@ def leetcode_command(config: Config, args: argparse.Namespace) -> int:
             result = tutor.feedback(config, read_answer(), problem)
         elif action == "review":
             result = tutor.review(config, problem)
+        elif action == "next":
+            result = tutor.advance(config, exercise, problem)
+        elif args.state == "complete":
+            action, result = "complete", tutor.complete(config, exercise, problem)
+        elif exercise is not None:
+            raise tutor.TutorError("bad_arguments", "--exercise goes with `mark complete` and `next` only")
         else:
             result = tutor.mark(config, args.state, problem)
     except (tutor.TutorError, CatalogError, db.sqlite3.Error, OSError) as exc:
@@ -387,6 +407,37 @@ def leetcode_text(action: str, result: dict) -> str:
             f"Hints are now {state}. The change applies from the next digest and the next reply; "
             "no problem was chosen and today's digest is not regenerated."
         )
+    if action == "complete":
+        exercise = result["exercise"]
+        name = f"{exercise['title'] or exercise['problem_id']} (exercise {exercise['exercise_id']})"
+        if result["completion_pending"]:  # it was completed earlier, and another exercise is current by now
+            return f"{name} was already complete. Nothing to change."
+        after = f"The next digest moves on to the {result['next_track']['name']} track; `dailygrad leetcode next` moves on now."
+        if not result["changed"]:
+            return f"{name} was already complete. {after}"
+        return f"{name} marked complete. This is not a mark that you solved it in code. {after}"
+    if action == "next":
+        previous, active = result["previous"], result["active"]
+        name = f"{previous['title'] or previous['problem_id']} (exercise {previous['exercise_id']})"
+        if not result["changed"]:
+            lines = [f"{name} had been moved on from already. Nothing to change."]
+        elif previous["outcome"] == "skipped":
+            lines = [f"{name} recorded as skipped: not completed, and not solved."]
+        else:
+            lines = [f"{name} stays completed."]
+        if active:
+            lines += [
+                "",
+                f"The current exercise is now {active['title']} (exercise {active['exercise_id']}, {active['difficulty']})",
+                f"  {active['url']}",
+                "",
+                active["statement"],
+                f"Example: input {active['example']['input']}; output {active['example']['output']}",
+                f"Constraints: {'; '.join(active['constraints'])}",
+                "",
+                "The next digest shows it. No digest was written and today's is unchanged.",
+            ]
+        return "\n".join(lines)
     title = result["problem"]["title"]
     if action == "hint":
         if result["hint"] is None:
@@ -440,14 +491,23 @@ def leetcode_status_text(result: dict) -> str:
         lines[1] += f"  ({result['preferences_problem']}; `dailygrad leetcode hints on` or `off` replaces the file)"
     current = result["current"]
     if current:
-        when = "today" if current["is_today"] else "not today"
+        if current["date"] is None:
+            when = "not in a digest yet"
+        else:
+            days = f"shown on {current['day']} day{'' if current['day'] == 1 else 's'}"
+            when = f"first shown {current['date']}, {days}, {'in' if current['is_today'] else 'not in'} today's digest"
+        if current["awaiting_completion"]:
+            standing = "Awaiting completion: `dailygrad leetcode mark complete` when you are finished, or `next` to move on now."
+        else:
+            standing = f"{current['outcome'].capitalize()}: the next digest brings a new exercise, or `dailygrad leetcode next` does now."
         lines += [
-            f"Current exercise ({current['date']}, {when}):",
+            f"Current exercise {current['exercise_id']} ({when}):",
             f"  {current['title']} ({current['difficulty']})  {current['url']}",
             f"  {names[current['track']]} track{', review' if current['review'] else ''}. "
             f"{current['answers']} answer{'' if current['answers'] == 1 else 's'} sent, "
             f"{current['hints_given']} of {current['hints_total']} hints given.",
             f"  {state_text(current['state'])}",
+            f"  {standing}",
             "",
         ]
     else:
@@ -463,6 +523,7 @@ def leetcode_status_text(result: dict) -> str:
         f"Progress: {progress['shown']} of {progress['problems']} problems shown; {progress['attempted']} attempted, "
         f"{progress['needs_review']} need review, {progress['comfortable']} comfortable, "
         f"{progress['solved_in_code']} solved in code.",
+        f"Exercises: {progress['exercises']} assigned; {progress['completed']} completed, {progress['skipped']} skipped.",
         f"Preferences file: {result['preferences_file']}",
     ]
     return "\n".join(lines)

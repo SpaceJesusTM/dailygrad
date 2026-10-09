@@ -1,6 +1,6 @@
 """The LeetCode catalog: loading the question bank, and deciding which problem comes next.
 
-Everything here is deterministic. Which problem a day gets depends only on the catalog file,
+Everything here is deterministic. Which problem is assigned next depends only on the catalog file,
 the rotation and the history of problems already shown; the model never chooses a problem.
 
 The catalog is a snapshot made during development from three sources (see docs/leetcode.md).
@@ -221,10 +221,10 @@ def gives_away(problem: Problem, text: str) -> bool:
 
 
 def track_for_day(rotation: list[str], days_assigned: int) -> str:
-    """The track whose turn it is, given how many days have already been assigned an exercise.
+    """The track whose turn it is, given how many exercises have been assigned so far.
 
-    The rotation advances with each exercise shown, not with the calendar, so a day on which
-    DailyGrad did not run does not skip a track.
+    The rotation advances with each exercise assigned, not with the calendar: an exercise
+    shown for several days takes one turn, and a day on which DailyGrad did not run skips none.
     """
     return rotation[days_assigned % len(rotation)]
 

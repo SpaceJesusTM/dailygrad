@@ -122,16 +122,23 @@ class Source:
 
 @dataclass
 class Exercise:
-    """A problem assigned to a day: the track whose turn it was, and the hint written for it."""
+    """A problem assigned as the current exercise: the track whose turn it was, and the hint written for it.
+
+    It stays the current exercise, and is shown in each day's digest, until the user completes
+    or skips it. `assigned_on` and `day` place one showing of it among the others.
+    """
 
     problem: Problem
     track: str
     sources: tuple[Source, ...]  # every source that lists the problem
-    review: bool = False  # the problem had been shown before
+    review: bool = False  # the problem had been assigned before
     hint: str = ""  # empty until one is written; shown only while hints are on
     hint_source: str = ""  # "model" or "catalog"
     hints_on: bool = True
     assignment_id: int | None = None  # its row in leetcode_assignments, once recorded
+    assigned_on: str | None = None  # the day a digest first showed it, YYYY-MM-DD; None if none has yet
+    day: int = 1  # how many days it has been shown, this one included
+    outcome: str | None = None  # "completed" or "skipped"; None while the user has not said either
 
     @property
     def shown_hint(self) -> str:

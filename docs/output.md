@@ -308,8 +308,10 @@ It still counts as shown.
 
 ### LeetCode
 
-The day's exercise. Every key but the last is what the digest shows, and none of them
-gives the answer away. The last, `reference_solution`, **is the answer**: it is there for a
+The current exercise. It is not chosen anew each day: a digest shows the same exercise as
+the day before until the user completes or skips it, and the five keys from `exercise_id`
+on say where this digest falls in that. Every key but the last is what the digest shows, and
+none of them gives the answer away. The last, `reference_solution`, **is the answer**: it is there for a
 program that gives feedback on the exercise, and is described [below](#reference-solution).
 A consumer that displays or summarises a digest must leave that key out. The Markdown never
 contains it. The firmer hints and the catalog's spoiler words are in neither: see
@@ -323,8 +325,8 @@ contains it. The firmer hints and the catalog's spoiler words are in neither: se
 | `url` | string | Link to the problem on LeetCode. |
 | `difficulty` | string | `"easy"`, `"medium"` or `"hard"`, as LeetCode rates it. |
 | `premium` | boolean | `true` if LeetCode shows the full problem only to subscribers. The digest is complete either way. |
-| `track` | string | The track whose day it was: `"neetcode-150"`, `"amd"` or `"vanguard"`. Always one of the IDs in `sources`. |
-| `review` | boolean | `true` if the problem was shown on an earlier day: the track had nothing new left. |
+| `track` | string | The track whose turn it was: `"neetcode-150"`, `"amd"` or `"vanguard"`. Always one of the IDs in `sources`. |
+| `review` | boolean | `true` if the problem had been assigned before, as an earlier exercise: the track had nothing new left. It says nothing about this exercise being shown again: see `is_carryover`. |
 | `sources` | array | Every list that holds the problem, each with `id`, `name`, `kind` (`"curriculum"` or `"company"`) and `publisher`. |
 | `company_tags` | array of strings | The names of the `"company"` sources. These are a third party's tags, published by the source's `publisher`; they are not LeetCode's own company tags. |
 | `statement` | string | A short summary of the task, written for DailyGrad. |
@@ -334,6 +336,11 @@ contains it. The firmer hints and the catalog's spoiler words are in neither: se
 | `hints_enabled` | boolean | Whether hints were switched on when the digest was written. |
 | `hint` | string or `null` | The one hint the digest shows. `null` while hints are off. |
 | `hint_source` | string or `null` | `"model"` if the local model worded the hint, `"catalog"` if it is the catalog's hint as written. `null` exactly when `hint` is `null`. |
+| `exercise_id` | integer | Names this assignment of the problem. The same in every digest that shows the exercise, and what `dailygrad leetcode mark complete --exercise` and `next --exercise` take. A later review of the same problem has another. |
+| `assigned_on` | string | The local date of the first digest that showed the exercise, `YYYY-MM-DD`. |
+| `day` | integer | How many days a digest has shown the exercise, this one included: 1 in the first. Days without a run are not counted. |
+| `is_carryover` | boolean | `true` if an earlier day's digest showed the same exercise (`day` is 2 or more). `false` for a newly assigned one. |
+| `awaiting_completion` | boolean | `true` while the user has neither completed nor skipped the exercise. `false` only in a rerun on the day it was ended: that day's digest still shows it, and the next day's has a new one. |
 | `reference_solution` | object or `null` | The catalog's reference answer. See below. `null` if the catalog has none for the problem. Digests written before this key was added do not have it. |
 
 `leetcode` was added to schema version 1 as a new key, the last in the document. Nothing
@@ -341,8 +348,21 @@ else changed, so a consumer that ignores unknown keys is unaffected. The Markdow
 `## LeetCode Micro-Lesson` section after the lesson, and has none when `leetcode` is `null`
 because exercises are switched off.
 
-The same problem is shown again on a rerun the same day, with the same hint. Switching hints
-off or on changes `hints_enabled` and `hint` from the next run, and never the problem.
+The same problem is shown again, with the same hint, on a rerun the same day and on every
+later day until the user ends the exercise. Switching hints off or on changes
+`hints_enabled` and `hint` from the next run, and never the problem. The five keys from
+`exercise_id` on were added without changing `schema_version`; digests written before they
+existed do not have them, and are to be read as a new exercise each (`is_carryover` false).
+
+In the Markdown a carried-over exercise has one more line under its byline, and is
+otherwise printed in full again:
+
+```markdown
+**Still in progress — originally assigned October 10** (day 3).
+```
+
+A rerun on the day the exercise was ended says `_Already completed: the next digest brings
+a new exercise._` (or `skipped`) there instead.
 
 #### Reference solution
 

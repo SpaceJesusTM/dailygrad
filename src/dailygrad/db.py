@@ -1,5 +1,6 @@
 """SQLite history: news items seen and shown, their summaries, digest runs, lessons and recall questions,
-and the LeetCode exercises assigned, the exchanges about them and what the user says of each problem.
+and the LeetCode exercises assigned, the runs that showed each, how each ended, the exchanges about them
+and what the user says of each problem.
 
 A story is not shown twice. "Shown" is judged within the current story-memory epoch: a row
 in story_resets starts a new epoch, after which stories shown earlier may be shown again.
@@ -11,6 +12,7 @@ repeat_showings.
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from dailygrad.models import Candidate, Exercise, Lesson, Story
 
@@ -88,18 +90,39 @@ CREATE TABLE IF NOT EXISTS recalls (
     created_at TEXT NOT NULL
 );
 
--- One row per LeetCode exercise shown: at most one per day. The rotation and each track's
--- progress are derived from this table alone. Being shown says nothing about being solved.
+-- One row per LeetCode exercise assigned. An exercise is not a day: the newest one stays the
+-- current exercise, shown again in each digest (leetcode_showings), until the user completes or
+-- skips it (leetcode_outcomes). The rotation and each track's progress are derived from this
+-- table alone, so showing an exercise again advances neither. Being shown says nothing about
+-- being solved.
 CREATE TABLE IF NOT EXISTS leetcode_assignments (
     id INTEGER PRIMARY KEY,
+    -- The first run that showed it. 0 for an exercise `dailygrad leetcode next` assigned between
+    -- runs, until a run shows it.
     run_id INTEGER NOT NULL REFERENCES runs(id),
     problem_id TEXT NOT NULL,  -- a catalog problem id (the LeetCode slug)
-    track TEXT NOT NULL,  -- the track whose day it was
-    review INTEGER NOT NULL,  -- 1 if the problem had been shown before
-    hint TEXT,  -- the hint written for it; NULL until one is, which is never while hints are off
+    track TEXT NOT NULL,  -- the track whose turn it was
+    review INTEGER NOT NULL,  -- 1 if the problem had been assigned before
+    hint TEXT,  -- the hint written for it, once, and shown each day; NULL until one is, which is never while hints are off
     hint_source TEXT,  -- 'model' or 'catalog'
     model TEXT NOT NULL,
     created_at TEXT NOT NULL
+);
+
+-- One row per run whose digest showed an exercise: the day-by-day record of each exercise.
+CREATE TABLE IF NOT EXISTS leetcode_showings (
+    run_id INTEGER PRIMARY KEY REFERENCES runs(id),
+    assignment_id INTEGER NOT NULL REFERENCES leetcode_assignments(id),
+    created_at TEXT NOT NULL
+);
+
+-- How an exercise ended, by the user's own word: at most one row for each. The newest exercise
+-- is the active one while it has no row here. An older exercise without one is from before
+-- exercises were kept until completed: the next day's simply followed it.
+CREATE TABLE IF NOT EXISTS leetcode_outcomes (
+    assignment_id INTEGER PRIMARY KEY REFERENCES leetcode_assignments(id),
+    outcome TEXT NOT NULL,  -- 'completed' or 'skipped'; neither is "solved in code" (leetcode_progress)
+    closed_at TEXT NOT NULL
 );
 
 -- One row per interactive exchange about an exercise: a further hint, an answer with the
@@ -132,7 +155,26 @@ def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    _backfill_showings(conn)
     return conn
+
+
+def _backfill_showings(conn: sqlite3.Connection) -> None:
+    """Give each exercise from before leetcode_showings existed the one showing it is known to have had.
+
+    That is the run its row names. Rows are only added, and only once: afterwards every
+    exercise a run has shown has a showing, and this finds nothing to do.
+    """
+    missing = (
+        "FROM leetcode_assignments a WHERE a.run_id > 0"
+        " AND NOT EXISTS (SELECT 1 FROM leetcode_showings s WHERE s.run_id = a.run_id)"
+    )
+    if conn.execute(f"SELECT 1 {missing} LIMIT 1").fetchone():
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO leetcode_showings (run_id, assignment_id, created_at)"
+                f" SELECT a.run_id, a.id, a.created_at {missing}"
+            )
 
 
 def recorded_runs(path: Path) -> list[tuple[int, str, str]]:
@@ -310,34 +352,110 @@ def record_lesson(conn: sqlite3.Connection, run_id: int, lesson: Lesson, model: 
 
 # --- LeetCode exercises
 
-ASSIGNMENT = "a.id, a.problem_id, a.track, a.review, a.hint, a.hint_source, runs.run_date"
+OUTCOMES = ("completed", "skipped")
+
+
+class Assigned(NamedTuple):
+    """One exercise as the database holds it."""
+
+    id: int
+    problem_id: str
+    track: str
+    review: int
+    hint: str | None
+    hint_source: str | None
+    run_date: str | None  # the day a digest first showed it; None if none has yet
+    created_at: str
+    outcome: str | None  # 'completed' or 'skipped'; None while it is open
+    closed_at: str | None
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
+
+
+def _exercises(conn: sqlite3.Connection) -> str:
+    """The SELECT every exercise query starts with: the columns of Assigned, from leetcode_assignments as `a`.
+
+    A read-only connection (see read_only) may be on a database from before exercises had
+    outcomes. It is read as it is: every exercise in it is open.
+    """
+    columns = "a.id, a.problem_id, a.track, a.review, a.hint, a.hint_source, runs.run_date, a.created_at"
+    source = "FROM leetcode_assignments a LEFT JOIN runs ON runs.id = a.run_id"
+    if not _has_table(conn, "leetcode_outcomes"):
+        return f"SELECT {columns}, NULL, NULL {source}"
+    return f"SELECT {columns}, o.outcome, o.closed_at {source} LEFT JOIN leetcode_outcomes o ON o.assignment_id = a.id"
+
+
+def _assigned(row: tuple | None) -> Assigned | None:
+    return Assigned._make(row) if row else None
 
 
 def leetcode_history(conn: sqlite3.Connection) -> list[str]:
-    """Problem IDs of every exercise shown, oldest first."""
+    """Problem IDs of every exercise assigned, oldest first: one for each, however many days it was shown."""
     return [problem_id for (problem_id,) in conn.execute("SELECT problem_id FROM leetcode_assignments ORDER BY id")]
 
 
-def leetcode_on(conn: sqlite3.Connection, day: date) -> tuple | None:
-    """The exercise shown on `day`, as (assignment id, problem id, track, review, hint, hint source, date), or None."""
-    return conn.execute(
-        f"SELECT {ASSIGNMENT} FROM leetcode_assignments a JOIN runs ON runs.id = a.run_id"
-        " WHERE runs.run_date = ? ORDER BY a.id DESC LIMIT 1",
-        (day.isoformat(),),
-    ).fetchone()
+def leetcode_on(conn: sqlite3.Connection, day: date) -> Assigned | None:
+    """The exercise a run showed on `day`, or None. It stays that day's exercise, whatever happened to it since."""
+    return _assigned(
+        conn.execute(
+            f"{_exercises(conn)} JOIN leetcode_showings s ON s.assignment_id = a.id"
+            " JOIN runs shown ON shown.id = s.run_id WHERE shown.run_date = ? ORDER BY s.run_id DESC LIMIT 1",
+            (day.isoformat(),),
+        ).fetchone()
+    )
 
 
-def latest_leetcode(conn: sqlite3.Connection, problem_id: str | None = None) -> tuple | None:
-    """The newest exercise shown, or the newest showing of `problem_id`: the same row shape as leetcode_on."""
-    return conn.execute(
-        f"SELECT {ASSIGNMENT} FROM leetcode_assignments a JOIN runs ON runs.id = a.run_id"
-        " WHERE :problem IS NULL OR a.problem_id = :problem ORDER BY a.id DESC LIMIT 1",
-        {"problem": problem_id},
-    ).fetchone()
+def latest_leetcode(conn: sqlite3.Connection, problem_id: str | None = None) -> Assigned | None:
+    """The newest exercise assigned, or the newest of `problem_id`."""
+    return _assigned(
+        conn.execute(
+            f"{_exercises(conn)} WHERE :problem IS NULL OR a.problem_id = :problem ORDER BY a.id DESC LIMIT 1",
+            {"problem": problem_id},
+        ).fetchone()
+    )
+
+
+def active_leetcode(conn: sqlite3.Connection) -> Assigned | None:
+    """The exercise still waiting for the user to complete or skip it: the newest, unless it is closed."""
+    newest = latest_leetcode(conn)
+    return newest if newest and newest.outcome is None else None
+
+
+def leetcode_by_id(conn: sqlite3.Connection, assignment_id: int) -> Assigned | None:
+    return _assigned(conn.execute(f"{_exercises(conn)} WHERE a.id = ?", (assignment_id,)).fetchone())
+
+
+def leetcode_before(conn: sqlite3.Connection, assignment_id: int) -> int | None:
+    """The ID of the exercise assigned just before this one, or None if it was the first."""
+    (previous,) = conn.execute("SELECT MAX(id) FROM leetcode_assignments WHERE id < ?", (assignment_id,)).fetchone()
+    return previous
+
+
+def leetcode_days(conn: sqlite3.Connection, assignment_id: int) -> list[str]:
+    """The days on which a digest showed an exercise, oldest first."""
+    if _has_table(conn, "leetcode_showings"):
+        shown = "leetcode_showings s JOIN runs ON runs.id = s.run_id WHERE s.assignment_id = ?"
+    else:  # read-only, on a database from before showings were kept: the one run its row names
+        shown = "leetcode_assignments a JOIN runs ON runs.id = a.run_id WHERE a.id = ?"
+    rows = conn.execute(f"SELECT DISTINCT runs.run_date FROM {shown} ORDER BY runs.run_date", (assignment_id,))
+    return [run_date for (run_date,) in rows]
+
+
+def leetcode_outcomes(conn: sqlite3.Connection) -> dict[str, int]:
+    """How many exercises the user has completed, and how many skipped."""
+    counts = dict.fromkeys(OUTCOMES, 0)
+    if _has_table(conn, "leetcode_outcomes"):
+        counts.update(conn.execute("SELECT outcome, COUNT(*) FROM leetcode_outcomes GROUP BY outcome").fetchall())
+    return counts
 
 
 def record_leetcode(conn: sqlite3.Connection, run_id: int, exercise: Exercise, model: str, now: datetime) -> int:
-    """Save the day's exercise. This is what advances the rotation and the track."""
+    """Save a newly assigned exercise. This is what advances the rotation and the track.
+
+    `run_id` is the run showing it, or 0 when it is assigned between runs.
+    """
     cursor = conn.execute(
         "INSERT INTO leetcode_assignments (run_id, problem_id, track, review, hint, hint_source, model, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -349,8 +467,29 @@ def record_leetcode(conn: sqlite3.Connection, run_id: int, exercise: Exercise, m
     return cursor.lastrowid
 
 
+def record_leetcode_showing(conn: sqlite3.Connection, run_id: int, assignment_id: int, now: datetime) -> None:
+    """Record that a run's digest showed an exercise. This advances nothing: the same exercise may be shown for days."""
+    conn.execute(
+        "INSERT INTO leetcode_showings (run_id, assignment_id, created_at) VALUES (?, ?, ?)",
+        (run_id, assignment_id, now.isoformat()),
+    )
+    conn.execute("UPDATE leetcode_assignments SET run_id = ? WHERE id = ? AND run_id = 0", (run_id, assignment_id))
+
+
+def close_leetcode(conn: sqlite3.Connection, assignment_id: int, outcome: str, now: datetime) -> bool:
+    """Record how an exercise ended. Returns False, changing nothing, if it had ended already."""
+    if outcome not in OUTCOMES:
+        raise ValueError(f"unknown outcome: {outcome}")
+    cursor = conn.execute(
+        "INSERT INTO leetcode_outcomes (assignment_id, outcome, closed_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(assignment_id) DO NOTHING",
+        (assignment_id, outcome, now.isoformat()),
+    )
+    return cursor.rowcount == 1
+
+
 def save_leetcode_hint(conn: sqlite3.Connection, assignment_id: int, hint: str, source: str) -> None:
-    """Keep the hint written for an exercise that had none, so later runs that day show the same one."""
+    """Keep the hint written for an exercise that had none, so every later run shows the same one."""
     conn.execute(
         "UPDATE leetcode_assignments SET hint = ?, hint_source = ? WHERE id = ? AND hint IS NULL",
         (hint, source, assignment_id),

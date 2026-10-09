@@ -76,6 +76,7 @@ def _leetcode_lines(exercise: Exercise | None) -> list[str]:
         "",
         f"_{_escape(' · '.join(byline))}_",
         "",
+        *_progress_lines(exercise),
         _escape(problem.statement),
         "",
         "**Example:**",
@@ -93,6 +94,16 @@ def _leetcode_lines(exercise: Exercise | None) -> list[str]:
     if exercise.shown_hint:
         lines += [f"**Hint:** {_escape(exercise.shown_hint)}", ""]
     return lines + ["_No implementation required: describe your approach in words._", ""]
+
+
+def _progress_lines(exercise: Exercise) -> list[str]:
+    """A line for an exercise that is not new today: still in progress from an earlier day, or closed since it was shown."""
+    if exercise.outcome:
+        return [f"_Already {exercise.outcome}: the next digest brings a new exercise._", ""]
+    if exercise.day > 1 and exercise.assigned_on:
+        first = date.fromisoformat(exercise.assigned_on)
+        return [f"**Still in progress — originally assigned {first:%B} {first.day}** (day {exercise.day}).", ""]
+    return []
 
 
 def _story_lines(number: int, story: Story) -> list[str]:

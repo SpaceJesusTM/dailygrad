@@ -1,4 +1,8 @@
-"""The daily LeetCode exercise: one catalog problem, presented for conceptual practice.
+"""The LeetCode exercise: one catalog problem at a time, presented for conceptual practice.
+
+An exercise is not a day. Once assigned it is the current exercise, and each day's digest shows
+it again, until the user says they have completed it or asks to move on. Only then is the next
+one chosen, so the rotation of tracks follows the user's pace and not the calendar.
 
 The problem, its example and its constraints are printed from the catalog as written, so the
 model cannot change the question, and it never chooses one. The model's single job here is to
@@ -54,17 +58,27 @@ HINT_SCHEMA = {
 
 
 def daily_exercise(conn, day: date, config: Config) -> Exercise | None:
-    """The exercise for `day`: the one already shown that day, else the next of the track whose turn it is.
+    """The exercise a digest for `day` shows.
+
+    That is the one a run already showed that day, whatever has happened to it since; else the
+    current exercise, while the user has neither completed nor skipped it; else the next of the
+    track whose turn it is. Showing an exercise again costs no model request: its hint was
+    written the first time.
 
     Returns None if it cannot be prepared. That must never cost the digest its news or its
-    lesson, so every failure is caught here and logged; nothing is recorded for the day, and
-    the next run tries again with the same problem.
+    lesson, so every failure is caught here and logged; nothing is recorded, and the next run
+    tries again with the same problem.
     """
     try:
         catalog = load_catalog()
-        exercise = restore(catalog, db.leetcode_on(conn, day)) or assign(catalog, conn, config.leetcode.rotation)
+        exercise = (
+            restore(catalog, db.leetcode_on(conn, day))
+            or restore(catalog, db.active_leetcode(conn))
+            or assign(catalog, conn, config.leetcode.rotation)
+        )
+        place(exercise, db.leetcode_days(conn, exercise.assignment_id) if exercise.assignment_id else [], day)
         exercise.hints_on = hints_enabled(config)
-        if exercise.hints_on and not exercise.hint:  # a rerun shows the hint the day already has
+        if exercise.hints_on and not exercise.hint:  # written once: every later showing has it already
             exercise.hint, exercise.hint_source = write_hint(exercise.problem, config)
         return exercise
     except Exception:
@@ -72,8 +86,51 @@ def daily_exercise(conn, day: date, config: Config) -> Exercise | None:
         return None
 
 
+def place(exercise: Exercise, shown_days: list[str], day: date | None = None) -> None:
+    """Say where a showing falls among an exercise's days: when it was first shown, and which day this is.
+
+    `shown_days` are the days it has been shown so far. `day` is the day of the digest being
+    written, which counts as one more unless it is among them already.
+    """
+    days = sorted({*shown_days, day.isoformat()} if day else set(shown_days))
+    exercise.assigned_on = days[0] if days else None
+    exercise.day = len(days)
+
+
+def settle(conn, exercise: Exercise) -> Exercise:
+    """The exercise a run records, decided once the run's transaction holds the write lock.
+
+    A run chooses its exercise before the minutes of model work, and `dailygrad leetcode mark
+    complete` and `next` may be used meanwhile. What they did stands. An exercise the run
+    restored has the outcome it has now. An exercise the run chose itself gives way to one that
+    `next` assigned in the meantime: the user was shown that one, and recording both would spend
+    two turns of the rotation on one request. Choosing is deterministic, so it is normally the
+    same problem and only its row is adopted; otherwise the digest shows the user's, with the
+    catalog's hint.
+    """
+    if exercise.assignment_id is not None:
+        saved = db.leetcode_by_id(conn, exercise.assignment_id)
+        exercise.outcome = saved.outcome if saved else exercise.outcome
+        return exercise
+    active = restore(load_catalog(), db.active_leetcode(conn))
+    if active is None:
+        return exercise
+    if active.problem.id == exercise.problem.id:
+        exercise.assignment_id = active.assignment_id
+        return exercise
+    log.warning("another exercise was assigned during the run: showing %s, not %s", active.problem.id, exercise.problem.id)
+    active.hints_on, active.assigned_on, active.day = exercise.hints_on, exercise.assigned_on, exercise.day
+    if active.hints_on and not active.hint:
+        active.hint, active.hint_source = active.problem.hints[0], "catalog"
+    return active
+
+
 def assign(catalog: Catalog, conn, rotation: list[str]) -> Exercise:
-    """Choose the next exercise from the history alone. Nothing is recorded here."""
+    """Choose the next exercise from the history alone. Nothing is recorded here.
+
+    The history holds each exercise once, however many days it was shown, so the track whose
+    turn it is depends only on how many exercises there have been.
+    """
     shown = db.leetcode_history(conn)
     track = track_for_day(rotation, len(shown))
     problem, review = next_problem(catalog.track(track), shown, review_ranks(db.leetcode_progress(conn)))
@@ -89,20 +146,19 @@ def review_ranks(progress: dict[str, tuple[str | None, str | None, str | None]])
     }
 
 
-def restore(catalog: Catalog, saved: tuple | None) -> Exercise | None:
-    """Rebuild an exercise from its saved row (see db.leetcode_on), so that a rerun shows it again unchanged.
+def restore(catalog: Catalog, saved: db.Assigned | None) -> Exercise | None:
+    """Rebuild an exercise from its saved row, so that it is shown again unchanged: the same track, review mark and hint.
 
     Returns None if nothing was saved, or if its problem has since been removed from the catalog.
     """
     if saved is None:
         return None
-    assignment_id, problem_id, track, review, hint, hint_source, _ = saved
-    problem = catalog.get(problem_id)
+    problem = catalog.get(saved.problem_id)
     if problem is None:
         return None
     return Exercise(
-        problem, track, catalog.sources_of(problem), bool(review), hint or "", hint_source or "",
-        assignment_id=assignment_id,
+        problem, saved.track, catalog.sources_of(problem), bool(saved.review), saved.hint or "", saved.hint_source or "",
+        assignment_id=saved.id, outcome=saved.outcome,
     )  # fmt: skip
 
 

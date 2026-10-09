@@ -15,15 +15,18 @@ the run starts, and the run then ends within about a minute, so a scheduler's ow
 can be set a little above that. See "When Ollama is slow or fails" in the README.
 
 Running more than once a day is safe: stories are not repeated, and the micro-lesson and the
-LeetCode exercise stay the same until the next calendar day.
+LeetCode exercise stay the same for the day. The micro-lesson moves on with the next calendar
+day. The LeetCode exercise does not: each morning's digest shows the same one until you
+complete or skip it, so the schedule decides when it is shown and you decide when it changes.
 
 `dailygrad sources` can be used while a schedule is active. A change is picked up by the
 next scheduled run. Give it the same `--config` (or working directory) as the scheduled
 job, so both use the same data directory.
 
-The same holds for `dailygrad leetcode`: its commands only follow up on the exercise a run
-has shown. They never choose a problem or write a digest, so they cannot disturb a schedule.
-See [leetcode.md](leetcode.md).
+The same holds for `dailygrad leetcode`: its commands never write a digest or start a run,
+so they cannot disturb a schedule. `mark complete` and `next` end the current exercise; a
+run that is under way at that moment keeps the exercise it started with, and the change
+shows from the next run. See [leetcode.md](leetcode.md).
 
 The examples assume DailyGrad is installed in a virtual environment at
 `/home/you/dailygrad/.venv` with its config at `/home/you/dailygrad/dailygrad.toml`.

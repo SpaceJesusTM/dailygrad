@@ -1,9 +1,12 @@
-"""Interactive practice on a LeetCode exercise: a further hint, feedback on an answer, the reference approach.
+"""Interactive practice on a LeetCode exercise: a further hint, feedback on an answer, the reference approach,
+and the two ways the user ends an exercise: completing it, or moving on to the next.
 
 These are the actions behind `dailygrad leetcode`. Each is short and bounded, so that a person
 or a program acting for one can call it: it reads the database, makes at most one model
-request, and returns plain data. None of them chooses a problem or advances the rotation;
-only a run does that. None of them marks a problem solved either: that is the user's to say.
+request, and returns plain data. An exercise stays the current one until the user says so:
+`complete` closes it and leaves the next for the next run to choose, and `advance` closes it and
+assigns the next at once. Nothing else chooses a problem or advances the rotation, and nothing
+here decides for the user that an exercise is finished or a problem solved.
 
 The user's answer is untrusted text. It is read from standard input, capped, and handed to the
 model as data between delimiters. The model's reply is used only as validated plain text.
@@ -11,6 +14,7 @@ model as data between delimiters. The model's reply is used only as validated pl
 
 import json
 import logging
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -32,6 +36,7 @@ MAX_FIELD_CHARS = 300
 MIN_EXPLANATION_CHARS = 80
 MAX_EXPLANATION_CHARS = 1200
 MARKS = ("attempted", "needs-review", "comfortable", "solved", "clear")
+EXERCISE_ID = re.compile(r"[1-9][0-9]{0,8}")  # an exercise's number, as `status` and a digest's JSON give it
 ASSESSMENTS = ("on_track", "partly", "off_track", "unclear")
 
 FEEDBACK_SYSTEM = """\
@@ -139,7 +144,7 @@ def status(config: Config, now: datetime | None = None) -> dict:
     Nothing here comes from the hidden half of the catalog: no approach, complexity, edge case or topic.
     """
     catalog = load_catalog()
-    shown, progress, latest, turns = _read_state(config)
+    shown, progress, latest, turns, days, outcomes = _read_state(config)
     hints_on, problem = leetcode.read_hints(config.leetcode_preferences_path)
     today = (now or datetime.now(timezone.utc)).astimezone().date().isoformat()
     rotation = config.leetcode.rotation
@@ -148,9 +153,12 @@ def status(config: Config, now: datetime | None = None) -> dict:
     exercise = leetcode.restore(catalog, latest)
     if exercise:
         exercise.hints_on = hints_on
+        leetcode.place(exercise, days)
         current = leetcode_document(exercise, with_reference=False) | {
-            "date": latest[6],
-            "is_today": latest[6] == today,
+            "date": exercise.assigned_on,  # the day a digest first showed it; null if none has yet
+            "is_today": today in days,  # whether today's digest shows it
+            "outcome": latest.outcome,  # "completed" or "skipped" once the user has said so
+            "closed_at": latest.closed_at,
             "hints_given": _hints_given(latest, turns),
             "hints_total": len(exercise.problem.hints),
             "answers": sum(kind == "answer" for kind, _, _ in turns),
@@ -167,7 +175,12 @@ def status(config: Config, now: datetime | None = None) -> dict:
         "preferences_file": str(config.leetcode_preferences_path.resolve()),
         "preferences_problem": problem,  # set if the file exists but cannot be used; hints then count as off
         "rotation": list(rotation),
+        # The track of the exercise after the current one: chosen when that one is completed or skipped.
         "next_track": {"id": next_track, "name": catalog.sources[next_track].name},
+        # The exercise `mark complete` and `next` act on, by the ID to give them; null when the
+        # current one is closed and the next has not been assigned yet.
+        "active_exercise_id": current["exercise_id"] if current and current["awaiting_completion"] else None,
+        "completion_pending": bool(current and current["awaiting_completion"]),
         "current": current,
         "tracks": [
             {
@@ -181,7 +194,9 @@ def status(config: Config, now: datetime | None = None) -> dict:
         "progress": {
             "problems": len(catalog.problems),
             "shown": len(seen),
-            "exercises": len(shown),  # days with an exercise; more than `shown` once reviews begin
+            "exercises": len(shown),  # exercises assigned; more than `shown` once reviews begin
+            "completed": outcomes["completed"],  # exercises, not problems: a review is completed again
+            "skipped": outcomes["skipped"],
             "attempted": sum(attempted is not None for attempted, _, _ in marked),
             "needs_review": sum(confidence == "needs-review" for _, confidence, _ in marked),
             "comfortable": sum(confidence == "comfortable" for _, confidence, _ in marked),
@@ -323,6 +338,151 @@ def mark(config: Config, state: str, problem_id: str | None = None, now: datetim
         }
     finally:
         conn.close()
+
+
+# --- ending an exercise
+
+
+def complete(
+    config: Config, exercise_id: int | str | None = None, problem_id: str | None = None, now: datetime | None = None
+) -> dict:  # fmt: skip
+    """Close the current exercise as completed, because the user says they are finished with it.
+
+    Nothing is asked of them first: no attempt, no answer, no code. The next exercise is not
+    chosen here; the next run does that. Naming the exercise (or its problem) makes this
+    compare-and-complete: if that is no longer the current exercise, nothing changes. Completing
+    an exercise that is already completed changes nothing and is not an error.
+    """
+    now = now or datetime.now(timezone.utc)
+    catalog, conn = load_catalog(), _open(config)
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")  # a run recording at this moment finishes first
+            target, newest = _target(conn, catalog, exercise_id, problem_id)
+            if target.id == newest.id and target.outcome is None:
+                changed = db.close_leetcode(conn, target.id, "completed", now)
+            elif target.outcome == "completed":
+                changed = False
+            else:
+                raise _stale(conn, catalog, target, newest)
+            exercise = _identity(conn, catalog, db.leetcode_by_id(conn, target.id))
+            pending = db.active_leetcode(conn) is not None
+            shown = db.leetcode_history(conn)
+        return {
+            "ok": True,
+            "action": "complete",
+            "changed": changed,
+            "exercise": exercise,
+            "completion_pending": pending,
+            "next_track": _next_track(config, catalog, shown) if not pending else None,
+        }
+    finally:
+        conn.close()
+
+
+def advance(
+    config: Config, exercise_id: int | str | None = None, problem_id: str | None = None, now: datetime | None = None
+) -> dict:  # fmt: skip
+    """Move on to the next exercise now, because the user asks to. It needs no reason and no progress.
+
+    The current exercise is closed as skipped, unless the user had completed it already, and
+    the next one is assigned in the same transaction: both happen or neither does. The new
+    exercise is returned without its reference solution. No digest is written and no model is
+    used; the next run shows the new exercise and words its hint.
+
+    Naming the exercise makes this safe to repeat: a second request for the same exercise finds
+    that it has been moved on from already and changes nothing.
+    """
+    now = now or datetime.now(timezone.utc)
+    if not config.leetcode.enabled:
+        raise TutorError("leetcode_disabled", "LeetCode exercises are switched off in the configuration")
+    catalog, conn = load_catalog(), _open(config)
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            target, newest = _target(conn, catalog, exercise_id, problem_id)
+            changed = target.id == newest.id
+            if changed:
+                db.close_leetcode(conn, target.id, "skipped", now)  # no effect on one already completed
+                following = leetcode.assign(catalog, conn, config.leetcode.rotation)
+                db.record_leetcode(conn, 0, following, config.ollama.model, now)
+            elif target.outcome is None or db.leetcode_before(conn, newest.id) != target.id:
+                raise _stale(conn, catalog, target, newest)
+            previous = _identity(conn, catalog, db.leetcode_by_id(conn, target.id))
+            active = leetcode.restore(catalog, db.active_leetcode(conn))
+        if active:
+            active.hints_on = leetcode.read_hints(config.leetcode_preferences_path)[0]
+            leetcode.place(active, [])
+        return {
+            "ok": True,
+            "action": "next",
+            "changed": changed,
+            "previous": previous,  # the exercise moved on from, with how it ended
+            "active": leetcode_document(active, with_reference=False),  # the new current exercise: no answer in it
+        }
+    finally:
+        conn.close()
+
+
+def _target(
+    conn: sqlite3.Connection, catalog: Catalog, exercise_id: int | str | None, problem_id: str | None
+) -> tuple[db.Assigned, db.Assigned]:  # fmt: skip
+    """(the exercise a request is about, the newest exercise). Unnamed, a request is about the newest."""
+    newest = db.latest_leetcode(conn)
+    if newest is None:
+        raise TutorError("no_exercise", "no LeetCode exercise has been assigned yet; `dailygrad run` assigns the first")
+    target = newest
+    if exercise_id is not None:
+        if not EXERCISE_ID.fullmatch(str(exercise_id)):
+            raise TutorError("unknown_exercise", f"{str(exercise_id)[:40]!r} is not an exercise ID")
+        target = db.leetcode_by_id(conn, int(exercise_id))
+        if target is None:
+            raise TutorError("unknown_exercise", f"there is no exercise {exercise_id}")
+    if problem_id is not None:
+        if not ID_PATTERN.fullmatch(problem_id) or catalog.get(problem_id) is None:
+            raise TutorError("unknown_problem", f"there is no problem {problem_id[:80]!r} in the catalog")
+        if target.problem_id != problem_id:
+            named = "the current exercise" if exercise_id is None else f"exercise {target.id}"
+            raise TutorError(
+                "stale_exercise",
+                f"{named} is {target.problem_id}, not {problem_id}; nothing was changed. "
+                "`dailygrad leetcode status` shows the current exercise.",
+            )
+    return target, newest
+
+
+def _stale(conn: sqlite3.Connection, catalog: Catalog, target: db.Assigned, newest: db.Assigned) -> TutorError:
+    """The refusal for a request about an exercise that is no longer the current one."""
+    how = f"was {target.outcome}" if target.outcome else "has been followed by another"
+    return TutorError(
+        "stale_exercise",
+        f"exercise {target.id} ({target.problem_id}) is not the current exercise: it {how}. Nothing was changed. "
+        f"The newest is exercise {newest.id} ({newest.problem_id}); `dailygrad leetcode status` shows it.",
+    )
+
+
+def _identity(conn: sqlite3.Connection, catalog: Catalog, saved: db.Assigned) -> dict:
+    """Which exercise a result is about, and how it stands. Nothing of the problem's content or its answer."""
+    problem = catalog.get(saved.problem_id)
+    days = db.leetcode_days(conn, saved.id)
+    return {
+        "exercise_id": saved.id,
+        "problem_id": saved.problem_id,
+        "number": problem.number if problem else None,
+        "title": problem.title if problem else None,
+        "url": problem.url if problem else None,
+        "track": saved.track,
+        "review": bool(saved.review),
+        "assigned_on": days[0] if days else None,
+        "days_shown": len(days),
+        "outcome": saved.outcome,
+        "closed_at": saved.closed_at,
+    }
+
+
+def _next_track(config: Config, catalog: Catalog, shown: list[str]) -> dict:
+    track = track_for_day(config.leetcode.rotation, len(shown))
+    return {"id": track, "name": catalog.sources[track].name}
 
 
 # --- prompts and parsing
@@ -496,8 +656,8 @@ def _open(config: Config) -> sqlite3.Connection:
     return db.connect(config.db_path)
 
 
-def _exercise(conn: sqlite3.Connection, catalog: Catalog, problem_id: str | None) -> tuple[tuple, Problem]:
-    """The exercise an interaction is about: the newest shown, or the newest showing of `problem_id`."""
+def _exercise(conn: sqlite3.Connection, catalog: Catalog, problem_id: str | None) -> tuple[db.Assigned, Problem]:
+    """The exercise an interaction is about: the newest assigned, or the newest of `problem_id`."""
     if problem_id is not None and (not ID_PATTERN.fullmatch(problem_id) or catalog.get(problem_id) is None):
         raise TutorError("unknown_problem", f"there is no problem {problem_id!r} in the catalog")
     row = db.latest_leetcode(conn, problem_id)
@@ -509,17 +669,23 @@ def _exercise(conn: sqlite3.Connection, catalog: Catalog, problem_id: str | None
     return row, problem
 
 
-def _read_state(config: Config) -> tuple[list[str], dict, tuple | None, list]:
-    """(problems shown, progress, the newest exercise, its exchanges), read without changing the database."""
+def _read_state(config: Config) -> tuple[list[str], dict, db.Assigned | None, list, list[str], dict[str, int]]:
+    """(problems assigned, progress, the newest exercise, its exchanges, the days it was shown, outcome counts).
+
+    Read without changing the database, so a database from before exercises were kept until
+    completed is read as it is: its newest exercise is the current one, shown on the one day it was.
+    """
+    nothing = [], {}, None, [], [], dict.fromkeys(db.OUTCOMES, 0)
     conn = db.read_only(config.db_path)
     if conn is None:
-        return [], {}, None, []
+        return nothing
     try:
         latest = db.latest_leetcode(conn)
-        turns = db.leetcode_turns(conn, latest[0]) if latest else []
-        return db.leetcode_history(conn), db.leetcode_progress(conn), latest, turns
+        turns = db.leetcode_turns(conn, latest.id) if latest else []
+        days = db.leetcode_days(conn, latest.id) if latest else []
+        return db.leetcode_history(conn), db.leetcode_progress(conn), latest, turns, days, db.leetcode_outcomes(conn)
     except sqlite3.OperationalError:  # a database from before the LeetCode tables: nothing has been shown
-        return [], {}, None, []
+        return nothing
     finally:
         conn.close()
 
@@ -530,7 +696,11 @@ def _hints_given(row: tuple, turns: list) -> int:
 
 
 def _state(problem_id: str, shown: list[str], progress: dict) -> dict:
-    """What is known of one problem. Shown, attempted, confident and solved are four separate things."""
+    """What is known of one problem. Shown, attempted, confident and solved are four separate things.
+
+    Completing or skipping is a fifth, and is not here: it is said of one exercise, not of the
+    problem, which may be assigned again as a review.
+    """
     attempted_at, confidence, solved_at = progress.get(problem_id, (None, None, None))
     return {
         "times_shown": shown.count(problem_id),

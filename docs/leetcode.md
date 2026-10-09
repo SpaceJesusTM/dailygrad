@@ -6,9 +6,12 @@ the edge cases. No code is asked for, and the digest a person reads does not con
 answer. The JSON carries the catalog's reference answer for a program that tutors on the
 exercise, as [`reference_solution`](output.md#reference-solution).
 
-This page covers the catalog and where it came from, how the day's problem is chosen, the
-hint preference, the `dailygrad leetcode` commands with their JSON output, and what a
-program needs in order to relay answers on a person's behalf.
+The exercise is not a new one each day. It stays the current exercise, and every digest
+shows it again, until the person says they are finished with it or asks for the next one.
+
+This page covers the catalog and where it came from, how the current exercise is chosen and
+ended, the hint preference, the `dailygrad leetcode` commands with their JSON output, and
+what a program needs in order to relay answers on a person's behalf.
 
 ## How it fits together
 
@@ -138,15 +141,21 @@ The snapshot is refreshed by hand, during development, never by a run:
 
 A problem removed from the catalog stays in the history. It is simply never chosen again.
 
-## Which problem a day gets
+## Which problem is the current exercise
 
 All of this is decided without the model, from the catalog, the rotation and the table of
-exercises already shown.
+exercises already assigned.
 
-**The rotation.** The tracks take turns, one a day, in the order of `rotation`:
-`neetcode-150`, `amd`, `vanguard`, and round again. The turn moves on with each exercise
-shown, not with the calendar, so a day on which DailyGrad did not run does not skip a
-track.
+**One exercise at a time.** A run shows, in this order: the exercise an earlier run showed
+that same day; else the current exercise, if it is still open; else a newly assigned one.
+An exercise is open until the person completes or skips it (see
+[Ending an exercise](#ending-an-exercise)), so with nothing said the same exercise appears
+day after day, each time whole, and marked as carried over from its second day.
+
+**The rotation.** The tracks take turns, one exercise each, in the order of `rotation`:
+`neetcode-150`, `amd`, `vanguard`, and round again. The turn moves on when a new exercise is
+assigned, not with the calendar and not with a showing: an exercise shown for four days
+takes one turn, and a day on which DailyGrad did not run skips none.
 
 **Within a track.** A track shows its easy problems first, then its medium ones, then its
 hard ones. Within a difficulty it walks the topics in a fixed order: arrays and hashing,
@@ -159,25 +168,80 @@ the same order at a higher level.
 track. Two Sum is on the NeetCode and AMD lists: whichever track reaches it first shows it,
 and the other passes over it.
 
-**Reviews.** When every problem of a track has been shown, its day is a review, not a
-skipped day. The review is the track's problem shown least often; among those, one you
+**Reviews.** When every problem of a track has been assigned, its turn is a review, not a
+skipped turn. The review is the track's problem assigned least often; among those, one you
 marked `needs-review` comes first, then unmarked ones, then `comfortable`, then solved; then
-the one shown longest ago. The previous day's problem is not chosen again while there is
-another. The digest marks a review as such, and `review` is `true` in the JSON. Nothing is
-deleted from the history to make a problem available again.
+the one assigned longest ago. The previous exercise's problem is not chosen again while
+there is another. The digest marks a review as such, and `review` is `true` in the JSON.
+Nothing is deleted from the history to make a problem available again. A review is a new
+exercise with its own ID: that the problem was completed, or solved in code, the first time
+does not finish it. And `review` is only ever about the problem having been assigned before.
+An exercise shown again because it is still open is a carry-over (`is_carryover`), not a
+review.
 
-With the default rotation the AMD track reaches its reviews after 17 of its days, about
-seven weeks, and Vanguard after 30 of its days. NeetCode 150 has new problems for more than
-a year.
+With the default rotation the AMD track reaches its reviews after 17 of its exercises and
+Vanguard after 30 of its. How long that takes now depends on you.
 
-**The same day.** A second run on the same calendar day shows the same exercise with the
-same hint, and asks the model nothing more for it.
+**The same day.** A second run on the same calendar day shows the exercise the first one
+showed, with the same hint, and asks the model nothing more for it. That holds even if the
+exercise was completed or skipped in between: the day's digest does not change under you,
+and `awaiting_completion` is then `false` in its JSON. The next day's digest has the new
+exercise.
+
+**Carrying over costs nothing.** The hint is worded once and stored with the exercise, so a
+later showing makes no model request for it.
 
 **Failures.** The exercise is recorded in the same transaction as the run. If the output
-files cannot be written the run is rolled back and the rotation has not moved. If the
-exercise cannot be prepared at all (an unreadable catalog, say) the digest keeps its news
-and its lesson, says that there is no exercise, records none, and is degraded; the next run
-tries the same problem.
+files cannot be written the run is rolled back: no exercise was assigned, no showing was
+recorded, and the rotation has not moved. If the exercise cannot be prepared at all (an
+unreadable catalog, say) the digest keeps its news and its lesson, says that there is no
+exercise, records none, and is degraded; the next run tries the same problem.
+
+## Ending an exercise
+
+Only the person ends an exercise, in one of two ways. Neither asks for an attempt, a correct
+answer, code or a reason.
+
+| | `leetcode mark complete` | `leetcode next` |
+|---|---|---|
+| Means | "I am finished with this one." | "Give me the next one now." |
+| Records the exercise as | `completed` | `skipped`, unless it was completed already |
+| Chooses the next exercise | no: the next run does | yes, at once, and returns it |
+| Writes a digest, starts a run, uses the model | no | no |
+
+Nothing else ends one. Being shown, a further hint, an answer however good, reading the
+reference approach, and the marks `attempted`, `needs-review`, `comfortable` and `solved`
+all leave the exercise open. `solved` is a statement about the problem (you solved it in
+code); `completed` is a statement about the exercise (you are done with it). Neither sets
+the other, and a skipped exercise counts as neither completed, attempted nor solved.
+
+**After `mark complete`** there is no current exercise until the next run assigns one, from
+the next track. A run later the same day still shows the completed exercise, because it is
+that day's.
+
+**After `next`** the new exercise is current immediately. It has not been in a digest: the
+next scheduled run shows it and words its hint. Today's digest, and anything posted from
+it, is left as it is.
+
+**Naming the exercise.** Both commands take `--exercise ID`, the `exercise_id` that `status`
+and a digest's JSON give, and act only if that is still the current exercise. That makes a
+request safe to repeat and safe to arrive late:
+
+- Completing an exercise that is already completed changes nothing (`changed` is `false`).
+- `next` for an exercise that has already been moved on from changes nothing, as long as it
+  is the one just before the current exercise; the reply names the current one again.
+- Anything older, an exercise that was skipped when completion was asked for, or an ID
+  that names another problem than `--problem` does, is refused with `stale_exercise`.
+  Nothing changes, and the caller should read `status` again.
+
+Without `--exercise` the commands act on the newest exercise, which is what a person at a
+terminal means. A program should always pass it.
+
+**During a run.** Each command is one short write transaction. A run that has already
+picked its exercise keeps it for that digest, and what the command did still stands: a
+completion made while the run was working is in that digest's `awaiting_completion`, and an
+exercise that `next` assigned meanwhile is the one the run records, so one request never
+uses two turns of the rotation.
 
 ## Hints
 
@@ -222,34 +286,54 @@ or if Ollama cannot be reached, or the run's time budget is spent. `hint_source`
 says which was shown: `"model"` or `"catalog"`. A hint taken from the catalog does not make
 a run degraded, because nothing is missing.
 
-The hint written for a day is stored with that day's exercise. If hints were off during the
-first run and are switched on later the same day, the next run writes the hint then.
+The hint is written once and stored with the exercise, so it is the same on every day the
+exercise is shown. If hints were off when the exercise was first shown and are switched on
+later, the next run writes the hint then. An exercise that `next` assigned has no hint
+until a run shows it.
 
 With `model_hints = false` under `[leetcode]`, the catalog's hint is always printed and the
 model is not asked.
 
 ## Progress
 
-Four things are kept apart, because none implies the next:
+Five things are kept apart, because none implies another. The first four are said of a
+problem, the last of one exercise:
 
 | State | Set by | Stored in |
 |---|---|---|
-| **Shown** | a run, when the exercise appears in a digest | `leetcode_assignments` |
+| **Shown** | a run, when the exercise appears in a digest | `leetcode_assignments`, `leetcode_showings` |
 | **Attempted** | an answer that describes an approach, or `mark attempted` | `leetcode_progress.attempted_at` |
 | **Needs review** / **comfortable** | only `mark needs-review` or `mark comfortable` | `leetcode_progress.confidence` |
 | **Solved in code** | only `mark solved` | `leetcode_progress.solved_at` |
+| **Completed** / **skipped** | only `mark complete` / `next` | `leetcode_outcomes.outcome` |
 
-Feedback never marks a problem as solved, however good the answer. `mark clear` withdraws
-the confidence and the solved mark; the showings and the exchanges are history and stay.
+Feedback never marks a problem as solved or an exercise as completed, however good the
+answer. `mark clear` withdraws the confidence and the solved mark; the showings, the
+exchanges and the outcome of an exercise are history and stay.
 
-Three tables were added to the database, and none of the earlier ones changed. A database
-from an earlier version gains them the first time it is opened for writing.
+The database holds five LeetCode tables. None of DailyGrad's earlier tables changed, and a
+database from an earlier version gains the missing ones the first time it is opened for
+writing.
 
-- `leetcode_assignments`: one row per exercise shown, with its track, whether it was a
-  review, and the hint written for it. The rotation and every track's position are derived
-  from this table alone.
+- `leetcode_assignments`: one row per exercise assigned, with its track, whether it was a
+  review, and the hint written for it. The newest row is the current exercise while it has
+  no outcome. The rotation and every track's position are derived from this table alone, so
+  showing an exercise again moves neither.
+- `leetcode_showings`: one row per run whose digest showed an exercise. It is what makes a
+  rerun show the day's exercise again, and where `day` and `assigned_on` come from.
+- `leetcode_outcomes`: at most one row per exercise, `completed` or `skipped`, with the
+  time. Its primary key is the exercise, so an exercise cannot be ended twice.
 - `leetcode_turns`: one row per further hint, answer or review, with what was returned.
 - `leetcode_progress`: one row per problem you have attempted or marked.
+
+**A database from before exercises were kept.** That version assigned a new exercise every
+day, so its `leetcode_assignments` has one row per day. Nothing in it is rewritten. Each row
+still counts as one exercise, so the rotation continues from exactly where it was; each
+gets the one showing its row names, added to `leetcode_showings` the first time the database
+is opened for writing; and the marks in `leetcode_progress` are untouched. Its newest
+exercise becomes the current one and is carried over until you end it. The older ones have
+no outcome: they were neither completed nor skipped, and are not counted as either.
+`status` reads such a database as it is, without changing it.
 
 ## Commands
 
@@ -260,11 +344,14 @@ from an earlier version gains them the first time it is opened for writing.
 | `leetcode hint` | The next hint for the exercise, one step firmer than the last. | No |
 | `leetcode answer` | Feedback on an approach read from standard input. | Yes, once |
 | `leetcode review` | The reference approach, its complexities and edge cases. **Shows the answer.** | Yes, once, for the explanation |
-| `leetcode mark STATE` | Records `attempted`, `needs-review`, `comfortable`, `solved` or `clear`. | No |
+| `leetcode mark STATE` | Records `attempted`, `needs-review`, `comfortable`, `solved` or `clear` for the problem. | No |
+| `leetcode mark complete` | Ends the current exercise as completed. The next run assigns the next. | No |
+| `leetcode next` | Ends the current exercise as skipped (unless completed) and assigns the next at once. | No |
 
 Every command accepts `--json` and `--config PATH`. `hint`, `answer`, `review` and `mark`
-are about the newest exercise shown, or with `--problem ID` about the newest showing of
-that problem. No command chooses a problem, moves the rotation or writes a digest.
+are about the newest exercise assigned, or with `--problem ID` about the newest exercise of
+that problem. `mark complete` and `next` also take `--exercise ID`. No command writes a
+digest or starts a run, and only `next` chooses a problem or moves the rotation.
 
 ### Exit codes and errors
 
@@ -279,8 +366,12 @@ standard output; the message also goes to standard error.
 
 | `code` | Exit | Meaning |
 |---|---:|---|
-| `no_exercise` | 2 | No exercise has been shown yet. `dailygrad run` shows the first. |
+| `no_exercise` | 2 | No exercise has been assigned yet. `dailygrad run` assigns the first. |
 | `unknown_problem` | 2 | `--problem` names something that is not in the catalog. |
+| `unknown_exercise` | 2 | `--exercise` is not an exercise's ID: not a number of 1 to 9 digits, or no exercise has it. |
+| `stale_exercise` | 2 | `mark complete` or `next` named an exercise that is no longer the current one, or one that is not the `--problem` given. Nothing changed: read `status` again. |
+| `leetcode_disabled` | 2 | `next` was asked for while exercises are switched off in the configuration. |
+| `bad_arguments` | 2 | `--exercise` was given to a `mark` other than `complete`. |
 | `not_shown` | 2 | `--problem` names a problem that has not been shown, so there is nothing to follow up on. |
 | `empty_answer` | 2 | Standard input held no text. |
 | `answer_too_long` | 2 | The answer is over 4,000 characters. |
@@ -301,11 +392,20 @@ standard output; the message also goes to standard error.
   "preferences_problem": null,
   "rotation": ["neetcode-150", "amd", "vanguard"],
   "next_track": {"id": "amd", "name": "AMD"},
+  "active_exercise_id": 1,
+  "completion_pending": true,
   "current": {
     "problem_id": "contains-duplicate",
     "…": "every key of the digest's leetcode object",
-    "date": "2026-10-09",
+    "exercise_id": 1,
+    "assigned_on": "2026-10-07",
+    "day": 3,
+    "is_carryover": true,
+    "awaiting_completion": true,
+    "date": "2026-10-07",
     "is_today": true,
+    "outcome": null,
+    "closed_at": null,
     "hints_given": 1,
     "hints_total": 2,
     "answers": 0,
@@ -319,21 +419,30 @@ standard output; the message also goes to standard error.
     }
   ],
   "progress": {
-    "problems": 182, "shown": 1, "exercises": 1,
+    "problems": 182, "shown": 1, "exercises": 1, "completed": 0, "skipped": 0,
     "attempted": 0, "needs_review": 0, "comfortable": 0, "solved_in_code": 0
   },
   "catalog": {"snapshot": "2026-10-09", "problems": 182}
 }
 ```
 
-- `current` is the newest exercise shown, or `null` before the first. It holds every key of
-  the digest's [`leetcode` object](output.md#leetcode) except `reference_solution`, with
-  `hint` following the hint preference as it is now, plus the keys shown above. `is_today`
-  says whether it is from the current local date. `hints_given` counts the digest's hint, if
-  it showed one, and those asked for since.
-- `next_track` is the track the next new exercise will come from.
-- `tracks[].shown` counts that list's problems shown on any track. `progress.exercises`
-  counts days with an exercise, which exceeds `progress.shown` once reviews begin.
+- `current` is the newest exercise assigned, or `null` before the first. It holds every key
+  of the digest's [`leetcode` object](output.md#leetcode) except `reference_solution`, with
+  `hint` following the hint preference as it is now, plus the keys shown above.
+  `hints_given` counts the digest's hint, if it showed one, and those asked for since.
+- `active_exercise_id` is the exercise that `mark complete` and `next` would act on, and the
+  ID to pass them as `--exercise`. `completion_pending` is `true` with it. Both are
+  `null`/`false` when the newest exercise has been completed and the next has not been
+  assigned yet; `current` is then that completed exercise, with `outcome` `"completed"`,
+  `closed_at` and `awaiting_completion` `false`.
+- `day` is the number of days a digest has shown the exercise so far, and `date` (the same
+  as `assigned_on`) the first of them. `is_today` says whether today's digest shows it. An
+  exercise that `next` assigned and no digest has shown yet has `date` `null`, `day` 0 and
+  `is_today` `false`.
+- `next_track` is the track the exercise after the current one will come from.
+- `tracks[].shown` counts that list's problems assigned on any track. `progress.exercises`
+  counts exercises, which exceeds `progress.shown` once reviews begin; `completed` and
+  `skipped` count how those ended, and an open or older exercise is in neither.
 - `preferences_problem` is a sentence if the preferences file exists but cannot be used,
   and `hints_enabled` is then `false`.
 - Nothing in it comes from the hidden half of the catalog.
@@ -462,7 +571,85 @@ reached. Reading the answer changes no state.
 
 `STATE` is `attempted`, `needs-review`, `comfortable`, `solved` or `clear`. `solved` means
 solved in code, and also counts as an attempt. `needs-review` and `comfortable` replace each
-other. `clear` withdraws the confidence and the solved mark.
+other. `clear` withdraws the confidence and the solved mark. None of them ends the exercise.
+
+### `mark complete --json`
+
+```sh
+dailygrad leetcode mark complete --exercise 1 --json
+```
+
+```json
+{
+  "ok": true,
+  "action": "complete",
+  "changed": true,
+  "exercise": {
+    "exercise_id": 1,
+    "problem_id": "contains-duplicate",
+    "number": 217,
+    "title": "Contains Duplicate",
+    "url": "https://leetcode.com/problems/contains-duplicate/",
+    "track": "neetcode-150",
+    "review": false,
+    "assigned_on": "2026-10-07",
+    "days_shown": 3,
+    "outcome": "completed",
+    "closed_at": "2026-10-09T17:44:42+00:00"
+  },
+  "completion_pending": false,
+  "next_track": {"id": "amd", "name": "AMD"}
+}
+```
+
+- `exercise` says exactly which exercise is completed. Nothing of the problem's content or
+  its answer is in the reply.
+- `changed` is `false` if it was completed already; `closed_at` is then the first time.
+- `completion_pending` is `false` when no exercise is open, which is the usual state after a
+  completion, and `next_track` is then the track the next run assigns from. If the
+  completed exercise has since been followed by another (a repeat that arrives late),
+  `completion_pending` is `true` and `next_track` is `null`: nothing is to be announced.
+- No problem is chosen, no digest or archive is touched, and the model is not used.
+
+### `next --json`
+
+```sh
+dailygrad leetcode next --exercise 1 --json
+```
+
+```json
+{
+  "ok": true,
+  "action": "next",
+  "changed": true,
+  "previous": {
+    "exercise_id": 1,
+    "problem_id": "contains-duplicate",
+    "…": "the same keys as `exercise` above",
+    "outcome": "skipped",
+    "closed_at": "2026-10-09T17:44:43+00:00"
+  },
+  "active": {
+    "problem_id": "two-sum",
+    "…": "every key of the digest's leetcode object except reference_solution",
+    "hint": null,
+    "exercise_id": 2,
+    "assigned_on": null,
+    "day": 0,
+    "is_carryover": false,
+    "awaiting_completion": true
+  }
+}
+```
+
+- `previous` is the exercise moved on from. Its `outcome` is `"skipped"`, or `"completed"`
+  if it had been completed before: `next` then only assigns the following exercise.
+- `active` is the new current exercise, safe to show a person: the statement, the example,
+  the constraints and the questions, with no `reference_solution`, no topic and no hint
+  (`hint` is `null` until a run words one).
+- `changed` is `false` for a repeat of a request already carried out. `active` is then the
+  exercise that request assigned, if it is still open, and nothing was skipped again.
+- The two writes, closing one exercise and assigning the next, are one transaction.
 
 ## The model's memory
 
@@ -473,12 +660,12 @@ ends, as before. The exercise adds one short request to a run.
 `keep_alive_seconds`, 300 by default, so that the next message of a conversation is answered
 in a few seconds instead of waiting for the model to load again. Ollama then frees it by
 itself. With `keep_alive_seconds = 0` it is freed as soon as the reply is sent. `status`,
-`hints`, `hint` and `mark` never load the model.
+`hints`, `hint`, `mark` and `next` never load the model.
 
 ## Using it from an assistant or another program
 
-DailyGrad owns the catalog, the choice of problem, the hints, the feedback, the progress and
-the hint preference. A program that delivers the digest or relays a conversation needs none
+DailyGrad owns the catalog, the choice of problem, the hints, the feedback, the progress, the
+hint preference, and which exercise is current. A program that delivers the digest or relays a conversation needs none
 of that logic, only these calls:
 
 | To | Run | Input |
@@ -491,13 +678,21 @@ of that logic, only these calls:
 | Relay an answer | `dailygrad leetcode answer --json` | the person's message on standard input |
 | Show the reference approach | `dailygrad leetcode review --json` | none |
 | Record a mark | `dailygrad leetcode mark STATE --json` | none |
+| Finish the exercise | `dailygrad leetcode mark complete --exercise ID --json` | none |
+| Move on to the next now | `dailygrad leetcode next --exercise ID --json` | none |
 
 Rules that keep this safe:
 
 - **Run a fixed argument list, without a shell.** Every argument above is a literal. The
   only free text, the answer, goes to standard input as UTF-8 and is never placed on a
-  command line. `--problem` takes a catalog ID, which matches `[a-z0-9]+(-[a-z0-9]+)*`, and
-  `STATE` is one of five words; DailyGrad refuses anything else.
+  command line. `--problem` takes a catalog ID, which matches `[a-z0-9]+(-[a-z0-9]+)*`,
+  `--exercise` a number of 1 to 9 digits, and `STATE` is one of six words; DailyGrad
+  refuses anything else.
+- **End an exercise only on the person's word.** Run `mark complete` when they say they are
+  finished, and `next` when they ask to move on or skip. Never because an answer was right,
+  and never refuse because it was not: they need no reason. Always pass `--exercise` with
+  the ID read from `status` or the digest, so that a stale request cannot end another
+  exercise, and report what the reply says, not what was asked for.
 - **Relay `reply` as it is.** It is the model's feedback after the checks above. Do not
   summarise it into a verdict, and do not add the answer to it.
 - **Never say a problem is solved** on the strength of feedback. Run `mark solved` only when
@@ -534,7 +729,7 @@ keep_alive_seconds = 300
 | Setting | Meaning |
 |---|---|
 | `enabled` | `false` leaves the exercise out: the digest has no section and `leetcode` is `null`. Nothing is recorded, so the rotation resumes where it was when it is switched on again. |
-| `rotation` | The tracks that take turns, in order. A track may be left out or listed more than once: `["neetcode-150", "neetcode-150", "amd"]` gives NeetCode two days in three. An unknown track is a configuration error (exit code 2). |
+| `rotation` | The tracks that take turns, in order. A track may be left out or listed more than once: `["neetcode-150", "neetcode-150", "amd"]` gives NeetCode two exercises in three. An unknown track is a configuration error (exit code 2). |
 | `model_hints` | `false` prints the catalog's hint as written and asks the model nothing. |
 | `feedback_budget_seconds` | The time allowed for the model request of one `answer` or `review`. |
 | `keep_alive_seconds` | How long the model stays loaded after such a reply. |

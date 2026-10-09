@@ -88,7 +88,7 @@ def show(config, problem_id, track=None, when=NOW, hint=DIGEST_HINT):
     conn = db.connect(config.db_path)
     with conn:
         run_id = db.record_run(conn, when.astimezone().date(), Path("digest.md"), [], when)
-        db.record_leetcode(conn, run_id, exercise, "test-model", when)
+        db.record_leetcode_showing(conn, run_id, db.record_leetcode(conn, run_id, exercise, "test-model", when), when)
     conn.close()
 
 
@@ -129,8 +129,10 @@ def test_status_before_anything_was_shown_creates_nothing(config, tmp_path):
     ]  # fmt: skip
     assert status["tracks"][1]["publisher"] == "Interview Solver" and status["tracks"][1]["kind"] == "company"
     assert status["progress"] == {
-        "problems": 182, "shown": 0, "exercises": 0, "attempted": 0, "needs_review": 0, "comfortable": 0, "solved_in_code": 0,
+        "problems": 182, "shown": 0, "exercises": 0, "completed": 0, "skipped": 0,
+        "attempted": 0, "needs_review": 0, "comfortable": 0, "solved_in_code": 0,
     }  # fmt: skip
+    assert (status["active_exercise_id"], status["completion_pending"]) == (None, False)
     assert not (tmp_path / "data").exists()  # reading the state creates no directory, database or file
 
 
@@ -146,6 +148,8 @@ def test_status_describes_the_current_exercise_without_the_answer(config):
     )  # fmt: skip
     assert current["hint"] == DIGEST_HINT and (current["hints_given"], current["hints_total"], current["answers"]) == (1, 2, 0)
     assert current["state"] == {"times_shown": 1, "attempted": False, "confidence": None, "solved_in_code": False}
+    assert (current["exercise_id"], current["awaiting_completion"], current["outcome"]) == (2, True, None)
+    assert (status["active_exercise_id"], status["completion_pending"]) == (2, True)
     assert status["next_track"]["id"] == "vanguard" and status["progress"]["shown"] == 2
     assert [t["shown"] for t in status["tracks"]] == [2, 1, 0]  # two-sum counts for both lists that hold it
 
@@ -521,9 +525,12 @@ def test_marks_record_what_the_user_says_and_keep_the_states_apart(config):
     assert solved["marked"] == "solved" and solved["state"] == {
         "times_shown": 1, "attempted": True, "confidence": "comfortable", "solved_in_code": True,
     }  # fmt: skip
-    assert tutor.status(config, now=NOW)["progress"] | {"problems": 0} == {
-        "problems": 0, "shown": 1, "exercises": 1, "attempted": 1, "needs_review": 0, "comfortable": 1, "solved_in_code": 1,
+    status = tutor.status(config, now=NOW)
+    assert status["progress"] | {"problems": 0} == {
+        "problems": 0, "shown": 1, "exercises": 1, "completed": 0, "skipped": 0,
+        "attempted": 1, "needs_review": 0, "comfortable": 1, "solved_in_code": 1,
     }  # fmt: skip
+    assert status["completion_pending"]  # solved in code is not the same as finished with the exercise
 
 
 def test_solving_implies_an_attempt_and_clear_withdraws_marks_but_not_history(config, model):

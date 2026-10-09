@@ -38,12 +38,12 @@ think = false
 # A request that times out, or fails with HTTP 500, 502, 503 or 504, is tried once more.
 timeout_seconds = 180
 
-# The daily LeetCode exercise: one problem to think through, from the catalog packaged with
-# DailyGrad. See docs/leetcode.md.
+# The LeetCode exercise: one problem to think through, from the catalog packaged with
+# DailyGrad, shown in each digest until you complete or skip it. See docs/leetcode.md.
 [leetcode]
 # false leaves the exercise out of the digest altogether.
 enabled = true
-# The tracks take turns, one a day, in this order, round and round. A track may be left out
+# The tracks take turns, one exercise each, in this order, round and round. A track may be left out
 # or listed more than once: neetcode-150, amd, vanguard.
 rotation = ["neetcode-150", "amd", "vanguard"]
 # The model words the digest's hint from the catalog's own, and a hint that would give the

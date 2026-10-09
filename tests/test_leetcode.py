@@ -11,7 +11,7 @@ import pytest
 import requests
 
 from conftest import NOW
-from dailygrad import cli, db, history, leetcode, llm, output, pipeline, render
+from dailygrad import cli, db, history, leetcode, llm, output, pipeline, render, tutor
 from dailygrad.config import Config, ConfigError, load_config
 from dailygrad.leetcode_catalog import CATEGORIES, PROMPTS, CatalogError, gives_away, load_catalog
 from dailygrad.models import Exercise
@@ -25,6 +25,7 @@ EARLIER_KEYS = ["schema_version", "run_id", "date", "generated_at", "status", "m
 PUBLIC_KEYS = [
     "problem_id", "number", "title", "url", "difficulty", "premium", "track", "review", "sources", "company_tags",
     "statement", "example", "constraints", "prompts", "hints_enabled", "hint", "hint_source",
+    "exercise_id", "assigned_on", "day", "is_carryover", "awaiting_completion",
 ]  # fmt: skip
 DOCUMENT_KEYS = [*PUBLIC_KEYS, "reference_solution"]  # what a digest shows, then the answer for a program that tutors
 REFERENCE_KEYS = ["source", "complete", "topic", "approach", "time", "space", "edge_cases"]
@@ -77,6 +78,13 @@ def exercise_of(problem, track=None, **fields):
     return Exercise(problem, track or problem.tracks[0], CATALOG.sources_of(problem), **fields)
 
 
+def practise(config, days, start=0):
+    """Run on `days` consecutive days, completing each day's exercise, so that every day brings a new one."""
+    for number in range(start, start + days):
+        pipeline.run(config, now=day(number))
+        tutor.complete(config, now=day(number))
+
+
 # --- in a run
 
 
@@ -114,6 +122,11 @@ def test_the_json_document_gains_a_leetcode_field(config, fake_web, model, fake_
         "hints_enabled": True,
         "hint": MODEL_HINT,
         "hint_source": "model",
+        "exercise_id": 1,
+        "assigned_on": NOW.astimezone().date().isoformat(),
+        "day": 1,
+        "is_carryover": False,
+        "awaiting_completion": True,
         "reference_solution": {
             "source": "catalog",
             "complete": True,
@@ -143,6 +156,8 @@ def test_the_reference_answer_is_only_in_the_json_key_made_for_it(config, fake_w
         # The firmer hints and the spoiler words are for DailyGrad's own hints and checks: they are in neither.
         assert problem.hints[1] not in digest + json.dumps(document, ensure_ascii=False)
         assert "spoilers" not in json.dumps(document) and "hints" not in reference
+        tutor.complete(config, now=day(number))  # so that the next day brings another problem
+    assert len(assignments(config)) == 6
 
 
 def test_the_reference_answer_is_in_every_json_output_and_in_no_markdown(config, fake_web, model, fake_articles):
@@ -180,9 +195,8 @@ def test_a_rerun_carries_the_same_reference_answer(config, fake_web, model, fake
     assert read_latest(config)["leetcode"]["reference_solution"] == first
 
 
-def test_days_rotate_through_neetcode_amd_and_vanguard(config, fake_web, model, fake_articles):
-    for number in range(7):
-        pipeline.run(config, now=day(number))
+def test_completed_exercises_rotate_through_neetcode_amd_and_vanguard(config, fake_web, model, fake_articles):
+    practise(config, 7)
 
     assert [(problem, track) for problem, track, _, _, _ in assignments(config)] == [
         (NEETCODE[0].id, "neetcode-150"),
@@ -191,13 +205,13 @@ def test_days_rotate_through_neetcode_amd_and_vanguard(config, fake_web, model, 
         (NEETCODE[1].id, "neetcode-150"),
         (AMD[1].id, "amd"),
         (VANGUARD[1].id, "vanguard"),
-        (NEETCODE[3].id, "neetcode-150"),  # NEETCODE[2] is two-sum: already shown on the AMD day
+        (NEETCODE[3].id, "neetcode-150"),  # NEETCODE[2] is two-sum: already shown on AMD's turn
     ]
     assert NEETCODE[2].id == AMD[0].id == "two-sum"
 
 
-def test_a_company_day_credits_the_tag_to_the_third_party(config, fake_web, model, fake_articles):
-    pipeline.run(config, now=day(0))
+def test_a_company_exercise_credits_the_tag_to_the_third_party(config, fake_web, model, fake_articles):
+    practise(config, 1)
     digest, _ = pipeline.run(config, now=day(1))
 
     exercise = read_latest(config)["leetcode"]
@@ -223,25 +237,28 @@ def test_a_rerun_on_the_same_day_shows_the_same_exercise_and_asks_the_model_noth
     assert table_count(config, "runs") == 3  # each run is still recorded; only the exercise is reused
 
 
-def test_the_next_day_takes_the_next_track(config, fake_web, model, fake_articles):
+def test_the_day_after_a_completion_takes_the_next_track(config, fake_web, model, fake_articles):
     pipeline.run(config, now=day(0))
     pipeline.run(config, now=day(0))
+    tutor.complete(config, now=day(0))
     pipeline.run(config, now=day(1))
 
     assert [problem for problem, _, _, _, _ in assignments(config)] == [FIRST.id, "two-sum"]
     assert read_latest(config)["leetcode"]["track"] == "amd"
 
 
-def test_a_day_without_a_run_does_not_skip_a_track(config, fake_web, model, fake_articles):
+def test_days_without_a_run_neither_skip_a_track_nor_end_the_exercise(config, fake_web, model, fake_articles):
     pipeline.run(config, now=day(0))
-    pipeline.run(config, now=day(5))  # four days missed
+    pipeline.run(config, now=day(5))  # four days missed: still the first exercise
+    assert [track for _, track, _, _, _ in assignments(config)] == ["neetcode-150"]
 
+    tutor.complete(config, now=day(5))
+    pipeline.run(config, now=day(9))  # three more missed: the next track, not the one after
     assert [track for _, track, _, _, _ in assignments(config)] == ["neetcode-150", "amd"]
 
 
 def test_history_survives_a_restart(config, fake_web, model, fake_articles):
-    for number in range(3):
-        pipeline.run(config, now=day(number))
+    practise(config, 3)
 
     conn = db.connect(config.db_path)  # a fresh connection, as a new process would open
     assert db.leetcode_history(conn) == [NEETCODE[0].id, AMD[0].id, VANGUARD[0].id]
@@ -255,8 +272,7 @@ def test_history_survives_a_restart(config, fake_web, model, fake_articles):
 def test_a_configured_rotation_is_followed(config, fake_web, model, fake_articles):
     config.leetcode.rotation = ["vanguard", "amd"]
 
-    for number in range(3):
-        pipeline.run(config, now=day(number))
+    practise(config, 3)
 
     assert [(problem, track) for problem, track, _, _, _ in assignments(config)] == [
         (VANGUARD[0].id, "vanguard"), (AMD[0].id, "amd"), (VANGUARD[1].id, "vanguard"),
@@ -265,8 +281,7 @@ def test_a_configured_rotation_is_followed(config, fake_web, model, fake_article
 
 def test_a_track_that_has_run_out_shows_a_review_marked_as_one(config, fake_web, model, fake_articles):
     config.leetcode.rotation = ["amd"]
-    for number in range(len(AMD)):
-        pipeline.run(config, now=day(number))
+    practise(config, len(AMD))
 
     digest, _ = pipeline.run(config, now=day(len(AMD)))
 
@@ -402,7 +417,7 @@ def test_a_broken_catalog_costs_only_the_exercise(config, fake_web, model, fake_
 
 
 def test_a_run_whose_files_cannot_be_written_does_not_advance_the_rotation(config, fake_web, model, fake_articles, monkeypatch):
-    pipeline.run(config, now=day(0))
+    practise(config, 1)
     disk = {"full": True}
     real_fsync = os.fsync
 
@@ -420,7 +435,7 @@ def test_a_run_whose_files_cannot_be_written_does_not_advance_the_rotation(confi
 
     disk["full"] = False
     pipeline.run(config, now=day(1))
-    assert assignments(config)[-1][:2] == ("two-sum", "amd")  # the AMD day was not lost, and not skipped
+    assert assignments(config)[-1][:2] == ("two-sum", "amd")  # AMD's turn was not lost, and not skipped
 
 
 def test_switched_off_there_is_no_section_no_field_value_and_no_history(config, fake_web, model, fake_articles):
@@ -775,7 +790,10 @@ def test_dailygrad_config_reports_the_exercise_and_the_preferences_file(tmp_path
     assert cli.main(["config"]) == 0
 
     shown = capsys.readouterr().out
-    assert "LeetCode:           one exercise a day, rotating neetcode-150 -> amd -> vanguard; hints on" in shown
+    assert (
+        "LeetCode:           one exercise at a time, kept until completed or skipped, "
+        "rotating neetcode-150 -> amd -> vanguard; hints on"
+    ) in shown
     assert f"LeetCode settings:  {(tmp_path / 'data' / 'leetcode_preferences.json').resolve()}" in shown
     assert f"Latest JSON:        {(tmp_path / 'data' / 'latest.json').resolve()}" in shown  # the earlier rows are unchanged
     assert not (tmp_path / "data").exists()
