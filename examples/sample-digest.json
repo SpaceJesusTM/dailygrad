@@ -1,59 +1,59 @@
 {
   "schema_version": 1,
   "run_id": 1,
-  "date": "2026-10-07",
-  "generated_at": "2026-10-07T21:52:38+00:00",
+  "date": "2026-10-09",
+  "generated_at": "2026-10-09T15:10:49+00:00",
   "status": "ok",
   "model": "qwen3.5:4b-q4_K_M",
   "stories": [
     {
-      "id": "anthropic.com/claude-haiku-5-5",
-      "title": "Claude Haiku 5.5",
-      "source": "Hacker News",
-      "url": "https://www.anthropic.com/claude-haiku-5-5",
-      "what_happened": "Anthropic released Claude Haiku 5.5, a small model designed for high-volume, cost-sensitive tasks that costs approximately 75% less to run than the previous version and features adjustable effort settings. The release also included price reductions on Sonnet 5.5 cache reads, new monthly API credits for Max and Team subscribers, and beta support for computer and browser use in the Python and TypeScript SDKs.",
-      "why_it_matters": "These updates provide developers with a faster, cheaper model option for repetitive workloads while offering broader incentives to build agents on the Claude Platform.",
+      "id": "microsoft.com/en-us/research/blog/agent-lightning-v1-0-a-3500-line-lightweight-agentic-rl-framework-for-training-agents-with-real-harnesses",
+      "title": "Agent Lightning v1.0: A 3,500-Line Lightweight Agentic RL Framework for Training Agents with Real Harnesses",
+      "source": "Microsoft Research",
+      "url": "https://www.microsoft.com/en-us/research/blog/agent-lightning-v1-0-a-3500-line-lightweight-agentic-rl-framework-for-training-agents-with-real-harnesses/",
+      "what_happened": "Microsoft Research Asia released Agent Lightning v1.0, a 3,500-line framework implementing Harnessed Agentic RL that allows agents to train using their existing deployment harnesses without reimplementing them, featuring native Kubernetes support and a Collocated Async RL architecture.",
+      "why_it_matters": "This approach enables data-efficient training of complex coding agents on open-source models by eliminating the cost and behavioral drift associated with rebuilding agent interaction loops specifically for reinforcement learning.",
       "evidence": "article",
       "model_failed": false
     },
     {
-      "id": "arxiv.org/abs/2610.07767",
-      "title": "TRACE: Rollout-Guided Quantization-Aware Training for FP4 Reinforcement Learning of MoE Language Models",
+      "id": "arxiv.org/abs/2610.06100",
+      "title": "From Traces to Agentic Worlds: Agentic Language World Models for Interactive Environment Simulation",
       "source": "Hugging Face Daily Papers",
-      "url": "https://arxiv.org/abs/2610.07767",
-      "what_happened": "Researchers released TRACE, a framework for reinforcement learning on Mixture-of-Experts language models that uses rollout-side quantization results to guide training-side rounding decisions and employs a caching scheme to minimize storage overhead.",
-      "why_it_matters": "This approach enables joint FP4 weight/activation and KV-cache rollouts with performance comparable to BF16 while achieving up to 5.4x speedup, addressing the high computation and memory costs of existing low-precision RL methods.",
+      "url": "https://arxiv.org/abs/2610.06100",
+      "what_happened": "Researchers introduced Trace2Env, a framework that converts historical interaction traces into a reusable environment worldbook containing schemas and behavioral knowledge to simulate environments without executable access.",
+      "why_it_matters": "This approach allows task agents to receive more faithful observations and consistent long-horizon interactions in simulations, improving the validity of actions when replayed in real systems.",
       "evidence": "abstract",
       "model_failed": false
     },
     {
-      "id": "arxiv.org/abs/2610.07557",
-      "title": "CheckerBench: Can Long-Horizon Agents Synthesize Static-Analysis Checkers?",
+      "id": "arxiv.org/abs/2610.11959",
+      "title": "MiMo-V2.6: Scaling Reinforcement Learning Towards Self-Improvement",
       "source": "Hugging Face Daily Papers",
-      "url": "https://arxiv.org/abs/2610.07557",
-      "what_happened": "Researchers released CheckerBench, a benchmark of 300 tasks derived from CVEs across multiple repositories and languages, along with CheckerLab, an evaluation framework to measure checker performance.",
-      "why_it_matters": "The results show that current coding agents struggle to reliably synthesize static-analysis checkers from scratch, highlighting a significant gap in their ability to perform complex, multi-step development tasks.",
+      "url": "https://arxiv.org/abs/2610.11959",
+      "what_happened": "The MiMo-V2.6 series introduced an omni-modal family of models that scales reinforcement learning compute through larger batches, higher throughput, and diverse environments across code, general, visual, and cyber domains. The release includes open-sourced training dynamics, RL environments, and the framework used for mixed-task agentic RL.",
+      "why_it_matters": "This provides a concrete reference for how to build stable, large-scale reinforcement learning systems that support model self-improvement through diverse agent harnesses and groupwise grading.",
       "evidence": "abstract",
       "model_failed": false
     },
     {
-      "id": "arxiv.org/abs/2609.37334",
-      "title": "Taming VLAs under Robot Execution Errors: Self-Compensation and Stress Testing",
+      "id": "arxiv.org/abs/2610.12242",
+      "title": "TokenRouter: Efficient Serving System for Token-Level LLM Routing",
       "source": "Hugging Face Daily Papers",
-      "url": "https://arxiv.org/abs/2609.37334",
-      "what_happened": "Researchers proposed self-compensating VLA policies that update online using the residual between commanded and executed actions without task rewards, and introduced RoboStress, a simulation benchmark combining friction, backlash, compliance, and gravity models into seven scenarios.",
-      "why_it_matters": "This provides a concrete framework for adapting vision-language-action models to real-world mechanical imperfections without requiring labeled task rewards or extensive physical testing.",
+      "url": "https://arxiv.org/abs/2610.12242",
+      "what_happened": "Researchers released TokenRouter, a serving system designed for token-level LLM routing that uses request-centric programming and per-model subservers with delayed-batching schedulers.",
+      "why_it_matters": "TokenRouter achieves up to 64.15x higher decoding throughput than existing systems by solving step desynchronization and batch admission delays inherent in current single-LLM-based serving architectures.",
       "evidence": "abstract",
       "model_failed": false
     },
     {
-      "id": "openai.com/index/gpt-6-for-everyone",
-      "title": "GPT-6 and Intelligent UI for everyone",
-      "source": "OpenAI",
-      "url": "https://openai.com/index/gpt-6-for-everyone",
-      "what_happened": null,
-      "why_it_matters": null,
-      "evidence": null,
+      "id": "developer.nvidia.com/blog/building-reliable-data-analytics-agents-lessons-from-the-kdd-cup",
+      "title": "Building Reliable Data Analytics Agents: Lessons from the KDD Cup",
+      "source": "NVIDIA Developer Blog",
+      "url": "https://developer.nvidia.com/blog/building-reliable-data-analytics-agents-lessons-from-the-kdd-cup/",
+      "what_happened": "The NVIDIA KGMON team placed second in the KDD Cup 2026 Data Agents competition by building a system that unified heterogeneous data sources into a single SQL interface and constrained the agent's action space to improve reliability. The approach included techniques such as pre-processing video content, seeding the agent with schema context, and using specialized tools to handle prose documents without loading entire files into the main context.",
+      "why_it_matters": "These findings suggest that building reliable AI agents often depends more on designing a constrained and inspectable harness around a fixed model than on expanding the model's capabilities.",
+      "evidence": "article",
       "model_failed": false
     }
   ],
@@ -74,6 +74,36 @@
     {
       "id": "google-research",
       "name": "Google Research",
+      "group": "labs",
+      "enabled": true
+    },
+    {
+      "id": "anthropic-news",
+      "name": "Anthropic News",
+      "group": "labs",
+      "enabled": true
+    },
+    {
+      "id": "meta-ai-research",
+      "name": "Meta AI Research",
+      "group": "labs",
+      "enabled": true
+    },
+    {
+      "id": "nvidia-developer-blog",
+      "name": "NVIDIA Developer Blog",
+      "group": "labs",
+      "enabled": true
+    },
+    {
+      "id": "mistral-ai-news",
+      "name": "Mistral AI News",
+      "group": "labs",
+      "enabled": true
+    },
+    {
+      "id": "microsoft-research",
+      "name": "Microsoft Research",
       "group": "labs",
       "enabled": true
     },
@@ -104,5 +134,55 @@
     "series": "Shapes and parameters",
     "lesson": "A linear layer maps input (..., d_in) to output (..., d_out) by acting only on the last axis while carrying leading axes unchanged. Applying a 768-to-3072 layer to shape (32, 128, 768) produces (32, 128, 3072)."
   },
-  "recall": null
+  "recall": null,
+  "leetcode": {
+    "problem_id": "contains-duplicate",
+    "number": 217,
+    "title": "Contains Duplicate",
+    "url": "https://leetcode.com/problems/contains-duplicate/",
+    "difficulty": "easy",
+    "premium": false,
+    "track": "neetcode-150",
+    "review": false,
+    "sources": [
+      {
+        "id": "neetcode-150",
+        "name": "NeetCode 150",
+        "kind": "curriculum",
+        "publisher": "NeetCode"
+      }
+    ],
+    "company_tags": [],
+    "statement": "Given an integer array, decide whether any value appears more than once.",
+    "example": {
+      "input": "nums = [1, 2, 3, 1]",
+      "output": "true"
+    },
+    "constraints": [
+      "1 ≤ n ≤ 10^5"
+    ],
+    "prompts": [
+      "What data structure would you choose?",
+      "How would your algorithm work at a high level?",
+      "What would its time complexity be?",
+      "What would its space complexity be?",
+      "What edge cases should you consider?"
+    ],
+    "hints_enabled": true,
+    "hint": "What should you track about the values you've seen so far?",
+    "hint_source": "model",
+    "reference_solution": {
+      "source": "catalog",
+      "complete": true,
+      "topic": "Arrays & Hashing",
+      "approach": "Walk the array adding each value to a hash set; a value that is already in the set is a duplicate. Sorting and comparing neighbours also works, in O(n log n) time with less extra space.",
+      "time": "O(n)",
+      "space": "O(n)",
+      "edge_cases": [
+        "a single element",
+        "all values distinct",
+        "negative values"
+      ]
+    }
+  }
 }

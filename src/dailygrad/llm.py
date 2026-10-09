@@ -60,11 +60,14 @@ def usage() -> str:
 
 
 def chat_json(
-    config: OllamaConfig, system: str, prompt: str, schema: dict, temperature: float | None = None
-) -> dict:
+    config: OllamaConfig, system: str, prompt: str, schema: dict, temperature: float | None = None,
+    keep_alive: str | int = KEEP_ALIVE,
+) -> dict:  # fmt: skip
     """Send one system + user message and return the reply, which Ollama constrains to `schema`.
 
-    `temperature` overrides the configured temperature for this one request.
+    `temperature` overrides the configured temperature for this one request. `keep_alive` is how
+    long Ollama keeps the model loaded afterwards: a run keeps it for its other requests and then
+    unloads it, while a caller that makes a single request says how long is worth it (0: not at all).
     """
     if temperature is None:
         temperature = config.temperature
@@ -74,7 +77,7 @@ def chat_json(
         "format": schema,
         "stream": False,
         "think": config.think,
-        "keep_alive": KEEP_ALIVE,
+        "keep_alive": keep_alive,
         "options": {"temperature": temperature, "num_ctx": config.context_tokens},
     }
     _run.requests += 1

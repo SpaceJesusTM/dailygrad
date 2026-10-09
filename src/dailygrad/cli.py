@@ -1,4 +1,4 @@
-"""Command-line interface: `dailygrad run`, `config`, `sources`, `history` and `reset-story-memory`."""
+"""Command-line interface: `dailygrad run`, `config`, `sources`, `history`, `leetcode` and `reset-story-memory`."""
 
 import argparse
 import json
@@ -7,8 +7,9 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from dailygrad import __version__, db, history, pipeline, preferences
+from dailygrad import __version__, db, history, leetcode, pipeline, preferences, tutor
 from dailygrad.config import CONFIG_ENV_VAR, DEFAULT_CONFIG_FILE, Config, ConfigError, find_config_file, load_config
+from dailygrad.leetcode_catalog import CatalogError
 from dailygrad.sources import ALL, available_sources
 
 
@@ -28,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("config", parents=[config_option], help="show the settings a run would use, and where files go")
     add_sources_command(commands, config_option)
     add_history_command(commands, config_option)
+    add_leetcode_command(commands, config_option)
     reset = commands.add_parser(
         "reset-story-memory",
         parents=[config_option],
@@ -49,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(config_path)
         available_sources(config)  # rejects feed names that cannot be told apart
     except ConfigError as exc:
-        if args.command in ("sources", "history") and getattr(args, "json", False):
+        if args.command in ("sources", "history", "leetcode") and getattr(args, "json", False):
             print(json.dumps({"ok": False, "error": {"code": "invalid_config", "message": str(exc)}}, indent=2))
         print(f"dailygrad: {exc}", file=sys.stderr)
         return 2
@@ -61,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         return sources_command(config, args.action or "list", getattr(args, "names", []), getattr(args, "json", False))
     if args.command == "history":
         return history_command(config, args)
+    if args.command == "leetcode":
+        return leetcode_command(config, args)
     if args.command == "reset-story-memory":
         return reset_story_memory_command(config, args.confirm)
 
@@ -92,8 +96,17 @@ def describe(config: Config, config_file: Path | None) -> str:
         ("Stories per digest", f"{config.final_story_count}, chosen from up to {config.filter.shortlist_size} candidates"),
         ("Sources", sources),
         ("Source preferences", config.source_preferences_path.resolve()),
+        ("LeetCode", leetcode_summary(config)),
+        ("LeetCode settings", config.leetcode_preferences_path.resolve()),
     ]
     return "\n".join(f"{label + ':':20}{value}" for label, value in rows)
+
+
+def leetcode_summary(config: Config) -> str:
+    if not config.leetcode.enabled:
+        return "off"
+    hints = "on" if leetcode.read_hints(config.leetcode_preferences_path)[0] else "off"
+    return f"one exercise a day, rotating {' -> '.join(config.leetcode.rotation)}; hints {hints}"
 
 
 def add_sources_command(commands, config_option: argparse.ArgumentParser) -> None:
@@ -284,6 +297,174 @@ def backfill_report(results: list[dict]) -> str:
         note = "" if result["markdown"] else " (JSON only: no matching Markdown)"
         label = "archived " if result["outcome"] == "archived" else "already   "
         lines.append(f"{label} run {result['run_id']} of {result['date']}{note}")
+    return "\n".join(lines)
+
+
+def add_leetcode_command(commands, config_option: argparse.ArgumentParser) -> None:
+    json_option = argparse.ArgumentParser(add_help=False)
+    json_option.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="print the result as JSON, for another program"
+    )
+    problem_option = argparse.ArgumentParser(add_help=False)
+    problem_option.add_argument(
+        "--problem", default=argparse.SUPPRESS, metavar="ID",
+        help="a problem shown earlier, by its ID, instead of the current exercise",
+    )  # fmt: skip
+    options = [config_option, json_option]
+    follow_up = [*options, problem_option]
+    command = commands.add_parser(
+        "leetcode",
+        parents=options,
+        help="the daily LeetCode exercise: its state, hints, and feedback on your approach",
+        description="Follow up on the daily LeetCode exercise. None of these commands chooses a problem or "
+        "writes a digest: a run does that, once a day. An answer is read from standard input.",
+    )
+    actions = command.add_subparsers(dest="action")
+    actions.add_parser("status", parents=options, help="the current exercise, the rotation and your progress (the default)")
+    hints = actions.add_parser("hints", parents=options, help="show a hint in each digest, or stop showing one")
+    hints.add_argument("switch", choices=("on", "off"))
+    actions.add_parser("hint", parents=follow_up, help="the next hint for the exercise, a step firmer than the last")
+    actions.add_parser(
+        "answer", parents=follow_up, help="feedback from the local model on your approach, read from standard input"
+    )
+    actions.add_parser("review", parents=follow_up, help="the reference approach and its complexity: this shows the answer")
+    mark = actions.add_parser("mark", parents=follow_up, help="record what you say of the problem; `solved` means in code")
+    mark.add_argument("state", choices=tutor.MARKS)
+
+
+def leetcode_command(config: Config, args: argparse.Namespace) -> int:
+    """Carry out one `dailygrad leetcode` action. Exits with 2 if the request is refused, 1 if it failed."""
+    action, as_json, problem = args.action or "status", getattr(args, "json", False), getattr(args, "problem", None)
+    try:
+        if action == "status":
+            result = tutor.status(config)
+        elif action == "hints":
+            result = tutor.set_hints(config, args.switch == "on")
+        elif action == "hint":
+            result = tutor.next_hint(config, problem)
+        elif action == "answer":
+            result = tutor.feedback(config, read_answer(), problem)
+        elif action == "review":
+            result = tutor.review(config, problem)
+        else:
+            result = tutor.mark(config, args.state, problem)
+    except (tutor.TutorError, CatalogError, db.sqlite3.Error, OSError) as exc:
+        refused = isinstance(exc, tutor.TutorError) and exc.refused
+        code = exc.code if isinstance(exc, tutor.TutorError) else "failed"
+        if as_json:
+            print(json.dumps({"ok": False, "error": {"code": code, "message": str(exc)}}, indent=2))
+        print(f"dailygrad: {exc}", file=sys.stderr)
+        return 2 if refused else 1
+
+    print(json.dumps(result, indent=2, ensure_ascii=False) if as_json else leetcode_text(action, result))
+    return 0
+
+
+def read_answer() -> str:
+    """The answer from standard input, as text. It is never taken from the command line."""
+    if sys.stdin.isatty():
+        print("Describe your approach, then press Ctrl-D:", file=sys.stderr)
+    limit = tutor.MAX_ANSWER_CHARS * 4  # room for blank lines and spaces, which do not count
+    try:
+        text = sys.stdin.read(limit + 1)
+    except UnicodeDecodeError as exc:
+        raise tutor.TutorError("bad_answer", "the answer is not valid UTF-8 text") from exc
+    if len(text) > limit:
+        message = f"the answer is over {tutor.MAX_ANSWER_CHARS} characters; send a shorter one"
+        raise tutor.TutorError("answer_too_long", message)
+    return text
+
+
+def leetcode_text(action: str, result: dict) -> str:
+    """A `dailygrad leetcode` result for a person. The JSON form carries the same facts."""
+    if action == "status":
+        return leetcode_status_text(result)
+    if action == "hints":
+        state = "on" if result["hints_enabled"] else "off"
+        if not result["changed"]:
+            return f"Hints were already {state}. Nothing to change."
+        return (
+            f"Hints are now {state}. The change applies from the next digest and the next reply; "
+            "no problem was chosen and today's digest is not regenerated."
+        )
+    title = result["problem"]["title"]
+    if action == "hint":
+        if result["hint"] is None:
+            return f"There are no more hints for {title}. `dailygrad leetcode review` explains the reference approach."
+        return f"Hint {result['hint_number']} of {result['hints_total']} for {title}: {result['hint']}"
+    if action == "answer":
+        if result["assessment"] == "unclear":
+            return f"{result['reply']}\n\n({title}: no approach was found in that, so it is not recorded as an attempt.)"
+        assessment = result["assessment"].replace("_", " ")
+        return f"{result['reply']}\n\n({title}: assessed as {assessment}. This is recorded as an attempt, not as solved.)"
+    if action == "review":
+        reference = result["reference"]
+        lines = [
+            f"{title}: the reference approach",
+            "",
+            reference["approach"],
+            f"Time: {reference['time']}. Space: {reference['space']}.",
+            f"Edge cases: {'; '.join(reference['edge_cases'])}.",
+        ]
+        if result["explanation"]:
+            lines += ["", result["explanation"]]
+        return "\n".join(lines)
+    if result["marked"] == "clear":
+        return f"{title}: your confidence and solved marks were cleared. {state_text(result['state'])}"
+    return f"{title} marked {result['marked']}. {state_text(result['state'])}"
+
+
+def state_text(state: dict) -> str:
+    times = state["times_shown"]
+    parts = [
+        f"Shown {times} time{'' if times == 1 else 's'}",
+        "attempted" if state["attempted"] else "not attempted",
+        state["confidence"] or "no confidence set",
+        "solved in code" if state["solved_in_code"] else "not solved in code",
+    ]
+    return ", ".join(parts) + "."
+
+
+def leetcode_status_text(result: dict) -> str:
+    names = {track["id"]: track["name"] for track in result["tracks"]}
+    progress, catalog = result["progress"], result["catalog"]
+    lines = [
+        f"LeetCode exercises: {'on' if result['enabled'] else 'off'}",
+        f"Hints in digests:   {'on' if result['hints_enabled'] else 'off'}",
+        f"Rotation:           {' -> '.join(names[track] for track in result['rotation'])}"
+        f" (next: {result['next_track']['name']})",
+        f"Catalog:            {catalog['problems']} problems, snapshot of {catalog['snapshot']}",
+        "",
+    ]
+    if result["preferences_problem"]:
+        lines[1] += f"  ({result['preferences_problem']}; `dailygrad leetcode hints on` or `off` replaces the file)"
+    current = result["current"]
+    if current:
+        when = "today" if current["is_today"] else "not today"
+        lines += [
+            f"Current exercise ({current['date']}, {when}):",
+            f"  {current['title']} ({current['difficulty']})  {current['url']}",
+            f"  {names[current['track']]} track{', review' if current['review'] else ''}. "
+            f"{current['answers']} answer{'' if current['answers'] == 1 else 's'} sent, "
+            f"{current['hints_given']} of {current['hints_total']} hints given.",
+            f"  {state_text(current['state'])}",
+            "",
+        ]
+    else:
+        lines += ["No exercise has been shown yet. `dailygrad run` shows the first.", ""]
+    rows = [("Track", "Listed by", "Problems", "Shown")]
+    for track in result["tracks"]:
+        name = track["name"] if track["in_rotation"] else f"{track['name']} (not in the rotation)"
+        rows.append((name, track["publisher"], str(track["problems"]), str(track["shown"])))
+    widths = [max(len(row[column]) for row in rows) for column in range(3)]
+    lines += ["  ".join([*(cell.ljust(width) for cell, width in zip(row, widths)), row[3]]) for row in rows]
+    lines += [
+        "",
+        f"Progress: {progress['shown']} of {progress['problems']} problems shown; {progress['attempted']} attempted, "
+        f"{progress['needs_review']} need review, {progress['comfortable']} comfortable, "
+        f"{progress['solved_in_code']} solved in code.",
+        f"Preferences file: {result['preferences_file']}",
+    ]
     return "\n".join(lines)
 
 

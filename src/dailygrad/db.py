@@ -1,4 +1,5 @@
-"""SQLite history: news items seen and shown, their summaries, digest runs, lessons and recall questions.
+"""SQLite history: news items seen and shown, their summaries, digest runs, lessons and recall questions,
+and the LeetCode exercises assigned, the exchanges about them and what the user says of each problem.
 
 A story is not shown twice. "Shown" is judged within the current story-memory epoch: a row
 in story_resets starts a new epoch, after which stories shown earlier may be shown again.
@@ -11,7 +12,7 @@ import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
-from dailygrad.models import Candidate, Lesson, Story
+from dailygrad.models import Candidate, Exercise, Lesson, Story
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -85,6 +86,44 @@ CREATE TABLE IF NOT EXISTS recalls (
     topic_id TEXT NOT NULL,
     question TEXT NOT NULL,
     created_at TEXT NOT NULL
+);
+
+-- One row per LeetCode exercise shown: at most one per day. The rotation and each track's
+-- progress are derived from this table alone. Being shown says nothing about being solved.
+CREATE TABLE IF NOT EXISTS leetcode_assignments (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    problem_id TEXT NOT NULL,  -- a catalog problem id (the LeetCode slug)
+    track TEXT NOT NULL,  -- the track whose day it was
+    review INTEGER NOT NULL,  -- 1 if the problem had been shown before
+    hint TEXT,  -- the hint written for it; NULL until one is, which is never while hints are off
+    hint_source TEXT,  -- 'model' or 'catalog'
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- One row per interactive exchange about an exercise: a further hint, an answer with the
+-- feedback on it, or a look at the reference approach.
+CREATE TABLE IF NOT EXISTS leetcode_turns (
+    id INTEGER PRIMARY KEY,
+    assignment_id INTEGER NOT NULL REFERENCES leetcode_assignments(id),
+    problem_id TEXT NOT NULL,
+    kind TEXT NOT NULL,  -- 'hint', 'answer' or 'review'
+    user_text TEXT,  -- the answer as sent; NULL for a hint or a review
+    reply TEXT NOT NULL,  -- what was returned, as JSON
+    model TEXT,  -- NULL when no model was used
+    created_at TEXT NOT NULL
+);
+
+-- What the user says about a problem. `attempted_at` is also set by the first answer that
+-- describes an approach; the other two are set only by `dailygrad leetcode mark`, never by a
+-- showing or by feedback.
+CREATE TABLE IF NOT EXISTS leetcode_progress (
+    problem_id TEXT PRIMARY KEY,
+    attempted_at TEXT,
+    confidence TEXT,  -- 'needs-review' or 'comfortable'
+    solved_at TEXT,  -- when the user said they had solved it in code
+    updated_at TEXT NOT NULL
 );
 """
 
@@ -267,3 +306,117 @@ def record_lesson(conn: sqlite3.Connection, run_id: int, lesson: Lesson, model: 
             "INSERT INTO recalls (run_id, topic_id, question, created_at) VALUES (?, ?, ?, ?)",
             (run_id, lesson.recall.id, lesson.recall.question, now.isoformat()),
         )
+
+
+# --- LeetCode exercises
+
+ASSIGNMENT = "a.id, a.problem_id, a.track, a.review, a.hint, a.hint_source, runs.run_date"
+
+
+def leetcode_history(conn: sqlite3.Connection) -> list[str]:
+    """Problem IDs of every exercise shown, oldest first."""
+    return [problem_id for (problem_id,) in conn.execute("SELECT problem_id FROM leetcode_assignments ORDER BY id")]
+
+
+def leetcode_on(conn: sqlite3.Connection, day: date) -> tuple | None:
+    """The exercise shown on `day`, as (assignment id, problem id, track, review, hint, hint source, date), or None."""
+    return conn.execute(
+        f"SELECT {ASSIGNMENT} FROM leetcode_assignments a JOIN runs ON runs.id = a.run_id"
+        " WHERE runs.run_date = ? ORDER BY a.id DESC LIMIT 1",
+        (day.isoformat(),),
+    ).fetchone()
+
+
+def latest_leetcode(conn: sqlite3.Connection, problem_id: str | None = None) -> tuple | None:
+    """The newest exercise shown, or the newest showing of `problem_id`: the same row shape as leetcode_on."""
+    return conn.execute(
+        f"SELECT {ASSIGNMENT} FROM leetcode_assignments a JOIN runs ON runs.id = a.run_id"
+        " WHERE :problem IS NULL OR a.problem_id = :problem ORDER BY a.id DESC LIMIT 1",
+        {"problem": problem_id},
+    ).fetchone()
+
+
+def record_leetcode(conn: sqlite3.Connection, run_id: int, exercise: Exercise, model: str, now: datetime) -> int:
+    """Save the day's exercise. This is what advances the rotation and the track."""
+    cursor = conn.execute(
+        "INSERT INTO leetcode_assignments (run_id, problem_id, track, review, hint, hint_source, model, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            run_id, exercise.problem.id, exercise.track, int(exercise.review),
+            exercise.hint or None, exercise.hint_source or None, model, now.isoformat(),
+        ),
+    )  # fmt: skip
+    return cursor.lastrowid
+
+
+def save_leetcode_hint(conn: sqlite3.Connection, assignment_id: int, hint: str, source: str) -> None:
+    """Keep the hint written for an exercise that had none, so later runs that day show the same one."""
+    conn.execute(
+        "UPDATE leetcode_assignments SET hint = ?, hint_source = ? WHERE id = ? AND hint IS NULL",
+        (hint, source, assignment_id),
+    )
+
+
+def leetcode_turns(conn: sqlite3.Connection, assignment_id: int) -> list[tuple[str, str | None, str]]:
+    """The exchanges about one exercise, oldest first, as (kind, the user's text, the reply as JSON)."""
+    return conn.execute(
+        "SELECT kind, user_text, reply FROM leetcode_turns WHERE assignment_id = ? ORDER BY id", (assignment_id,)
+    ).fetchall()
+
+
+def record_leetcode_turn(
+    conn: sqlite3.Connection, assignment_id: int, problem_id: str, kind: str, user_text: str | None, reply: str,
+    model: str | None, now: datetime,
+) -> None:  # fmt: skip
+    """Save one exchange about an exercise. It changes nothing else: see mark_leetcode for progress."""
+    conn.execute(
+        "INSERT INTO leetcode_turns (assignment_id, problem_id, kind, user_text, reply, model, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (assignment_id, problem_id, kind, user_text, reply, model, now.isoformat()),
+    )
+
+
+def leetcode_progress(conn: sqlite3.Connection) -> dict[str, tuple[str | None, str | None, str | None]]:
+    """What the user has said of each problem, as {problem id: (attempted at, confidence, solved at)}."""
+    rows = conn.execute("SELECT problem_id, attempted_at, confidence, solved_at FROM leetcode_progress")
+    return {problem_id: (attempted_at, confidence, solved_at) for problem_id, attempted_at, confidence, solved_at in rows}
+
+
+def mark_leetcode(
+    conn: sqlite3.Connection, problem_id: str, now: datetime, attempted: bool = False,
+    confidence: str | None = None, solved: bool = False, clear: bool = False,
+) -> None:  # fmt: skip
+    """Record what the user says of a problem. An earlier attempt or solve keeps its original time.
+
+    `clear` withdraws the confidence and the solve. The showings and exchanges are history, and stay.
+    """
+    stamp = now.isoformat()
+    conn.execute(
+        "INSERT INTO leetcode_progress (problem_id, updated_at) VALUES (?, ?) ON CONFLICT(problem_id) DO NOTHING",
+        (problem_id, stamp),
+    )
+    if clear:
+        conn.execute("UPDATE leetcode_progress SET confidence = NULL, solved_at = NULL WHERE problem_id = ?", (problem_id,))
+    if attempted or solved:  # solving it in code is also an attempt
+        conn.execute(
+            "UPDATE leetcode_progress SET attempted_at = COALESCE(attempted_at, ?) WHERE problem_id = ?",
+            (stamp, problem_id),
+        )
+    if confidence:
+        conn.execute("UPDATE leetcode_progress SET confidence = ? WHERE problem_id = ?", (confidence, problem_id))
+    if solved:
+        conn.execute(
+            "UPDATE leetcode_progress SET solved_at = COALESCE(solved_at, ?) WHERE problem_id = ?", (stamp, problem_id)
+        )
+    conn.execute("UPDATE leetcode_progress SET updated_at = ? WHERE problem_id = ?", (stamp, problem_id))
+
+
+def read_only(path: Path) -> sqlite3.Connection | None:
+    """A connection that cannot change the database, or None if there is no database. Nothing is created.
+
+    A database from before a table existed does not gain it this way: a query on it raises
+    sqlite3.OperationalError, which the caller treats as "no rows".
+    """
+    if not path.is_file():
+        return None
+    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)

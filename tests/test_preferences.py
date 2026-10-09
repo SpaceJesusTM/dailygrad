@@ -662,7 +662,7 @@ def test_the_sources_key_is_an_addition_that_leaves_the_earlier_layout_intact(ru
 
     document = read_latest(run_config)
     assert document["schema_version"] == 1
-    assert [key for key in document if key != "sources"] == earlier
+    assert [key for key in document if key not in ("sources", "leetcode")] == earlier  # the keys added since
     assert all(type(name) is str for name in document["failed_sources"])  # still names, as before
 
 

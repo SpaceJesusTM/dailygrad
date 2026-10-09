@@ -1,5 +1,6 @@
 """End-to-end runs with every HTTP response, the model and article fetching faked."""
 
+import functools
 import json
 import os
 import sqlite3
@@ -68,7 +69,16 @@ def config(tmp_path):
     config = Config(data_dir=str(tmp_path / "data"))
     config.rss.feeds = [FEED]
     config.final_story_count = 3  # the six fixture candidates then leave the model a real choice
+    # These tests pin the news and the lesson down to the byte and the model request, as they were
+    # before the LeetCode exercise existed. The exercise has its own tests in test_leetcode_pipeline.py.
+    config.leetcode.enabled = False
     return config
+
+
+@pytest.fixture
+def run_at_fixture_time(monkeypatch):
+    """Make `dailygrad run` use the fixtures' date: the CLI reads the real clock, and the fixture news ages."""
+    monkeypatch.setattr(pipeline, "run", functools.partial(pipeline.run, now=NOW))
 
 
 @pytest.fixture
@@ -404,6 +414,7 @@ def test_latest_json_describes_the_same_digest(config, fake_web, model, fake_art
             "lesson": lesson_text(SCHEDULE[2].title),
         },
         "recall": {"topic_id": SCHEDULE[0].id, "question": SCHEDULE[0].question},
+        "leetcode": None,  # switched off in this file's config
     }
     assert f"**{SCHEDULE[2].title}**" in digest
 
@@ -1023,7 +1034,7 @@ def test_cli_run_prints_only_the_digest_to_stdout(tmp_path, fake_web, model, fak
 
 
 def test_cli_exits_non_zero_but_still_prints_the_digest_when_the_model_fails(
-    tmp_path, fake_web, model, fake_articles, capsys, monkeypatch
+    tmp_path, fake_web, model, fake_articles, capsys, monkeypatch, run_at_fixture_time
 ):
     monkeypatch.chdir(tmp_path)  # no config file: the digest goes to ./data
     model.error = llm.LLMError("cannot reach Ollama at http://localhost:11434")
@@ -1035,7 +1046,9 @@ def test_cli_exits_non_zero_but_still_prints_the_digest_when_the_model_fails(
     assert list((tmp_path / "data" / "digests").glob("*.md"))
 
 
-def test_cli_exits_non_zero_when_only_the_lesson_fails(tmp_path, fake_web, model, fake_articles, capsys, monkeypatch):
+def test_cli_exits_non_zero_when_only_the_lesson_fails(
+    tmp_path, fake_web, model, fake_articles, capsys, monkeypatch, run_at_fixture_time
+):
     monkeypatch.chdir(tmp_path)
     model.lesson_error = llm.LLMError("Ollama did not return valid JSON")
 

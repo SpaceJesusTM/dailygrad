@@ -10,7 +10,7 @@
 #
 # `dailygrad config` prints the settings in effect and where every file goes.
 
-# Where the database, the dated digests, latest.md and latest.json are written.
+# Where the database, the dated digests, latest.md, latest.json and the preferences files are written.
 # A relative path resolves against the directory the command is run from, so
 # use an absolute path when a scheduler runs DailyGrad.
 data_dir = "data"
@@ -37,6 +37,24 @@ think = false
 # Time allowed for one model request. Raise it for large models or CPU-only machines.
 # A request that times out, or fails with HTTP 500, 502, 503 or 504, is tried once more.
 timeout_seconds = 180
+
+# The daily LeetCode exercise: one problem to think through, from the catalog packaged with
+# DailyGrad. See docs/leetcode.md.
+[leetcode]
+# false leaves the exercise out of the digest altogether.
+enabled = true
+# The tracks take turns, one a day, in this order, round and round. A track may be left out
+# or listed more than once: neetcode-150, amd, vanguard.
+rotation = ["neetcode-150", "amd", "vanguard"]
+# The model words the digest's hint from the catalog's own, and a hint that would give the
+# approach away is discarded. false prints the catalog's hint as written and asks the model nothing.
+# Whether a digest shows a hint at all is not set here: use `dailygrad leetcode hints on|off`.
+model_hints = true
+# Seconds allowed for the model request of one `dailygrad leetcode answer` or `review`.
+feedback_budget_seconds = 120
+# How long Ollama keeps the model loaded after such a reply, so that a follow-up is quick.
+# 0 frees it at once. A run (`dailygrad run`) always unloads the model when it ends.
+keep_alive_seconds = 300
 
 [filter]
 # Ignore items older than this.

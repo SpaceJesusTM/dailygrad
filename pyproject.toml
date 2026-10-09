@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dailygrad"
-version = "0.1.0"
+version = "0.2.0"
 description = "A lightweight self-hosted daily AI briefing and micro-learning tool."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Samuel Ruo" }]
-keywords = ["ai", "news", "digest", "ollama", "local-llm", "learning"]
+keywords = ["ai", "news", "digest", "ollama", "local-llm", "learning", "leetcode"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -40,7 +40,7 @@ dailygrad = "dailygrad.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-dailygrad = ["curriculum.toml"]
+dailygrad = ["curriculum.toml", "leetcode.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

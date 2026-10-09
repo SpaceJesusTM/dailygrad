@@ -13,7 +13,8 @@ from pathlib import Path
 from dailygrad import history
 from dailygrad.config import Config
 from dailygrad.curriculum import TRACKS
-from dailygrad.models import Lesson, Story
+from dailygrad.leetcode_catalog import CATEGORIES, PROMPTS
+from dailygrad.models import Exercise, Lesson, Problem, Story
 
 SCHEMA_VERSION = 1
 
@@ -27,9 +28,15 @@ def digest_document(
     failed_sources: list[str],
     lesson: Lesson | None,
     sources: list[dict],
+    exercise: Exercise | None = None,
+    leetcode_failed: bool = False,
 ) -> dict:
-    """The digest as plain data, for the JSON files. Every key is always present; a missing value is null."""
-    degraded = lesson is None or any(story.model_failed for story in stories)
+    """The digest as plain data, for the JSON files. Every key is always present; a missing value is null.
+
+    `exercise` is None when LeetCode exercises are switched off, and also when one was due and
+    could not be prepared: `leetcode_failed` tells the two apart, and makes the run degraded.
+    """
+    degraded = lesson is None or leetcode_failed or any(story.model_failed for story in stories)
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,  # the id of this run's row in the database
@@ -42,6 +49,7 @@ def digest_document(
         "sources": sources,  # every available source, and whether this run fetched it
         "lesson": _lesson(lesson),
         "recall": _recall(lesson),
+        "leetcode": leetcode_document(exercise),
     }
 
 
@@ -77,6 +85,71 @@ def _recall(lesson: Lesson | None) -> dict | None:
     if lesson is None or lesson.recall is None:
         return None
     return {"topic_id": lesson.recall.id, "question": lesson.recall.question}
+
+
+def reference_solution(problem: Problem) -> dict | None:
+    """The catalog's reference answer to a problem, for a program that tutors on it. None if the catalog has none.
+
+    Every part is the catalog's own and was validated when the file was loaded: nothing here is
+    written by the model, and nothing is filled in. A part the catalog does not have is null,
+    and `complete` is then false. The topic alone is not an answer, so without any of the
+    approach, the complexities and the edge cases there is no reference at all.
+    """
+    parts = {
+        "approach": problem.approach.strip() or None,
+        "time": problem.time.strip() or None,
+        "space": problem.space.strip() or None,
+        "edge_cases": [case for case in problem.edge_cases if case.strip()] or None,
+    }
+    if all(part is None for part in parts.values()):
+        return None
+    return {
+        "source": "catalog",
+        "complete": all(part is not None for part in parts.values()),
+        "topic": CATEGORIES.get(problem.category),  # the pattern the problem is filed under
+        **parts,
+    }
+
+
+def leetcode_document(exercise: Exercise | None, with_reference: bool = True) -> dict | None:
+    """The exercise as a digest's JSON holds it.
+
+    Every key but the last is what the digest shows. `reference_solution` is the answer: the
+    catalog's approach, complexities and edge cases, for a program that gives feedback on the
+    exercise. It is never in the Markdown, and a consumer that displays or summarises a digest
+    must leave it out. The further hints and the spoiler words stay in the catalog.
+
+    `with_reference=False` leaves that key out altogether, for output a person reads directly.
+    """
+    if exercise is None:
+        return None
+    problem = exercise.problem
+    document = {
+        "problem_id": problem.id,  # LeetCode's slug: permanent
+        "number": problem.number,
+        "title": problem.title,
+        "url": problem.url,
+        "difficulty": problem.difficulty,
+        "premium": problem.premium,
+        "track": exercise.track,  # the track whose day it was
+        "review": exercise.review,
+        "sources": [
+            {"id": source.id, "name": source.name, "kind": source.kind, "publisher": source.publisher}
+            for source in exercise.sources
+        ],
+        # Companies a third party lists the problem under: not LeetCode's own company tags.
+        "company_tags": [source.name for source in exercise.sources if source.kind == "company"],
+        "statement": problem.statement,
+        "example": {"input": problem.example_input, "output": problem.example_output},
+        "constraints": list(problem.constraints),
+        "prompts": list(PROMPTS),
+        "hints_enabled": exercise.hints_on,
+        "hint": exercise.shown_hint or None,
+        "hint_source": (exercise.hint_source or None) if exercise.shown_hint else None,
+    }
+    if with_reference:
+        document["reference_solution"] = reference_solution(problem)  # the answer: never to be displayed unasked
+    return document
 
 
 def dated_markdown_path(config: Config, day: date) -> Path:

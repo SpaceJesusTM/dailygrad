@@ -9,13 +9,14 @@ import pytest
 
 from dailygrad import output
 from dailygrad.config import Config
+from dailygrad.leetcode_catalog import load_catalog
 from dailygrad.models import Lesson, Story, Topic
 
 DAY = date(2026, 10, 7)
 GENERATED = datetime(2026, 10, 7, 12, 30, 15, 123456, tzinfo=timezone.utc)
 TOPIC = Topic("tf-masking", "architectures", "Transformers", 5, "Causal and padding masks", ("a", "b", "c"), "What does the causal mask do?")
 OLDER = Topic("nn-backprop", "foundations", "Backpropagation", 1, "Backpropagation", ("a", "b", "c"), "Why is reverse mode efficient?")
-KEYS = ["schema_version", "run_id", "date", "generated_at", "status", "model", "stories", "failed_sources", "sources", "lesson", "recall"]
+KEYS = ["schema_version", "run_id", "date", "generated_at", "status", "model", "stories", "failed_sources", "sources", "lesson", "recall", "leetcode"]
 SOURCES = [{"id": "hacker-news", "name": "Hacker News", "group": "community", "enabled": True}]
 STORY_KEYS = ["id", "title", "source", "url", "what_happened", "why_it_matters", "evidence", "model_failed"]
 
@@ -160,5 +161,9 @@ def test_published_sample_follows_the_documented_layout():
     assert list(sample["lesson"]) == ["topic_id", "title", "track", "track_name", "series", "lesson"]
     markdown = (examples / "sample-digest.md").read_text(encoding="utf-8")
     assert all(story["url"] in markdown for story in sample["stories"])
+    # The sample's reference answer is the catalog's own for that problem, and only the JSON has it.
+    problem = load_catalog().get(sample["leetcode"]["problem_id"])
+    assert sample["leetcode"]["reference_solution"] == output.reference_solution(problem)
+    assert problem.approach not in markdown
     for private in ("/Users/", "/home/", "localhost"):
         assert private not in markdown and private not in json.dumps(sample)

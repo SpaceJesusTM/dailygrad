@@ -1,45 +1,76 @@
-# DailyGrad — 2026-10-07
+# DailyGrad — 2026-10-09
 
 ## AI News
 
-### 1. [Claude Haiku 5.5](https://www.anthropic.com/claude-haiku-5-5)
+### 1. [Agent Lightning v1.0: A 3,500-Line Lightweight Agentic RL Framework for Training Agents with Real Harnesses](https://www.microsoft.com/en-us/research/blog/agent-lightning-v1-0-a-3500-line-lightweight-agentic-rl-framework-for-training-agents-with-real-harnesses/)
 
-_Hacker News, 505 points_
+_Microsoft Research_
 
-**What happened:** Anthropic released Claude Haiku 5.5, a small model designed for high-volume, cost-sensitive tasks that costs approximately 75% less to run than the previous version and features adjustable effort settings. The release also included price reductions on Sonnet 5.5 cache reads, new monthly API credits for Max and Team subscribers, and beta support for computer and browser use in the Python and TypeScript SDKs.
+**What happened:** Microsoft Research Asia released Agent Lightning v1.0, a 3,500-line framework implementing Harnessed Agentic RL that allows agents to train using their existing deployment harnesses without reimplementing them, featuring native Kubernetes support and a Collocated Async RL architecture.
 
-**Why it matters:** These updates provide developers with a faster, cheaper model option for repetitive workloads while offering broader incentives to build agents on the Claude Platform.
+**Why it matters:** This approach enables data-efficient training of complex coding agents on open-source models by eliminating the cost and behavioral drift associated with rebuilding agent interaction loops specifically for reinforcement learning.
 
-### 2. [TRACE: Rollout-Guided Quantization-Aware Training for FP4 Reinforcement Learning of MoE Language Models](https://arxiv.org/abs/2610.07767)
+### 2. [From Traces to Agentic Worlds: Agentic Language World Models for Interactive Environment Simulation](https://arxiv.org/abs/2610.06100)
 
-_Hugging Face Daily Papers, 70 upvotes_
+_Hugging Face Daily Papers, 171 upvotes_
 
-**What happened:** Researchers released TRACE, a framework for reinforcement learning on Mixture-of-Experts language models that uses rollout-side quantization results to guide training-side rounding decisions and employs a caching scheme to minimize storage overhead.
+**What happened:** Researchers introduced Trace2Env, a framework that converts historical interaction traces into a reusable environment worldbook containing schemas and behavioral knowledge to simulate environments without executable access.
 
-**Why it matters:** This approach enables joint FP4 weight/activation and KV-cache rollouts with performance comparable to BF16 while achieving up to 5.4x speedup, addressing the high computation and memory costs of existing low-precision RL methods.
+**Why it matters:** This approach allows task agents to receive more faithful observations and consistent long-horizon interactions in simulations, improving the validity of actions when replayed in real systems.
 
-### 3. [CheckerBench: Can Long-Horizon Agents Synthesize Static-Analysis Checkers?](https://arxiv.org/abs/2610.07557)
+### 3. [MiMo-V2.6: Scaling Reinforcement Learning Towards Self-Improvement](https://arxiv.org/abs/2610.11959)
 
-_Hugging Face Daily Papers, 52 upvotes_
+_Hugging Face Daily Papers, 53 upvotes_
 
-**What happened:** Researchers released CheckerBench, a benchmark of 300 tasks derived from CVEs across multiple repositories and languages, along with CheckerLab, an evaluation framework to measure checker performance.
+**What happened:** The MiMo-V2.6 series introduced an omni-modal family of models that scales reinforcement learning compute through larger batches, higher throughput, and diverse environments across code, general, visual, and cyber domains. The release includes open-sourced training dynamics, RL environments, and the framework used for mixed-task agentic RL.
 
-**Why it matters:** The results show that current coding agents struggle to reliably synthesize static-analysis checkers from scratch, highlighting a significant gap in their ability to perform complex, multi-step development tasks.
+**Why it matters:** This provides a concrete reference for how to build stable, large-scale reinforcement learning systems that support model self-improvement through diverse agent harnesses and groupwise grading.
 
-### 4. [Taming VLAs under Robot Execution Errors: Self-Compensation and Stress Testing](https://arxiv.org/abs/2609.37334)
+### 4. [TokenRouter: Efficient Serving System for Token-Level LLM Routing](https://arxiv.org/abs/2610.12242)
 
-_Hugging Face Daily Papers, 24 upvotes_
+_Hugging Face Daily Papers, 97 upvotes_
 
-**What happened:** Researchers proposed self-compensating VLA policies that update online using the residual between commanded and executed actions without task rewards, and introduced RoboStress, a simulation benchmark combining friction, backlash, compliance, and gravity models into seven scenarios.
+**What happened:** Researchers released TokenRouter, a serving system designed for token-level LLM routing that uses request-centric programming and per-model subservers with delayed-batching schedulers.
 
-**Why it matters:** This provides a concrete framework for adapting vision-language-action models to real-world mechanical imperfections without requiring labeled task rewards or extensive physical testing.
+**Why it matters:** TokenRouter achieves up to 64.15x higher decoding throughput than existing systems by solving step desynchronization and batch admission delays inherent in current single-LLM-based serving architectures.
 
-### 5. [GPT-6 and Intelligent UI for everyone](https://openai.com/index/gpt-6-for-everyone)
+### 5. [Building Reliable Data Analytics Agents: Lessons from the KDD Cup](https://developer.nvidia.com/blog/building-reliable-data-analytics-agents-lessons-from-the-kdd-cup/)
 
-_OpenAI_
+_NVIDIA Developer Blog_
+
+**What happened:** The NVIDIA KGMON team placed second in the KDD Cup 2026 Data Agents competition by building a system that unified heterogeneous data sources into a single SQL interface and constrained the agent's action space to improve reliability. The approach included techniques such as pre-processing video content, seeding the agent with schema context, and using specialized tools to handle prose documents without loading entire files into the main context.
+
+**Why it matters:** These findings suggest that building reliable AI agents often depends more on designing a constrained and inspectable harness around a fixed model than on expanding the model's capabilities.
 
 ## AI Micro-Lesson
 
 **Tensors, shapes and dimensional reasoning**
 
 A linear layer maps input (..., d\_in) to output (..., d\_out) by acting only on the last axis while carrying leading axes unchanged. Applying a 768-to-3072 layer to shape (32, 128, 768) produces (32, 128, 3072).
+
+## LeetCode Micro-Lesson
+
+**[Contains Duplicate](https://leetcode.com/problems/contains-duplicate/)**
+
+_Easy · Source: NeetCode 150_
+
+Given an integer array, decide whether any value appears more than once.
+
+**Example:**
+
+- Input: `nums = [1, 2, 3, 1]`
+- Output: `true`
+
+**Constraints:** 1 ≤ n ≤ 10^5
+
+**Think about:**
+
+1. What data structure would you choose?
+2. How would your algorithm work at a high level?
+3. What would its time complexity be?
+4. What would its space complexity be?
+5. What edge cases should you consider?
+
+**Hint:** What should you track about the values you've seen so far?
+
+_No implementation required: describe your approach in words._

@@ -3,13 +3,21 @@
 import re
 from datetime import date
 
-from dailygrad.models import Lesson, Story
+from dailygrad.leetcode_catalog import PROMPTS
+from dailygrad.models import Exercise, Lesson, Story
 
 EVIDENCE_NOTES = {"excerpt": "summarised from the feed excerpt; the full article could not be retrieved"}
 
 
-def render_digest(day: date, stories: list[Story], failed_sources: list[str], lesson: Lesson | None) -> str:
-    """Render the digest. A lesson of None means lesson generation failed this run."""
+def render_digest(
+    day: date, stories: list[Story], failed_sources: list[str], lesson: Lesson | None,
+    exercise: Exercise | None = None, leetcode_failed: bool = False,
+) -> str:  # fmt: skip
+    """Render the digest. A lesson of None means lesson generation failed this run.
+
+    The LeetCode section follows the lesson when there is an exercise, or when one was due and
+    could not be prepared (`leetcode_failed`). With neither, the digest has no such section.
+    """
     lines = [f"# DailyGrad — {day.isoformat()}", "", "## AI News", ""]
     if not stories:
         lines += ["No new stories today.", ""]
@@ -18,6 +26,8 @@ def render_digest(day: date, stories: list[Story], failed_sources: list[str], le
     if failed_sources:
         lines += [f"_Sources unavailable this run: {', '.join(failed_sources)}._", ""]
     lines += _lesson_lines(lesson)
+    if exercise or leetcode_failed:
+        lines += _leetcode_lines(exercise)
     return "\n".join(lines)
 
 
@@ -42,6 +52,47 @@ def _lesson_lines(lesson: Lesson | None) -> list[str]:
     if lesson.recall:
         lines += [f"**Quick recall:** {_escape(lesson.recall.question)}", ""]
     return lines
+
+
+def _leetcode_lines(exercise: Exercise | None) -> list[str]:
+    """The exercise: enough of the problem to think it through, and nothing of the answer.
+
+    The approach, the complexities and the edge cases stay in the catalog, and so does the
+    topic, because naming it names the technique. Only the one hint written for the day is
+    shown, and only while hints are on.
+    """
+    lines = ["## LeetCode Micro-Lesson", ""]
+    if exercise is None:
+        return lines + ["_No LeetCode exercise today: it could not be prepared. No problem was used up._", ""]
+    problem = exercise.problem
+    byline = [problem.difficulty.capitalize()]
+    if exercise.review:
+        byline.insert(0, "Review")
+    byline.append("Source: " + ", ".join(source.credit for source in exercise.sources))
+    if problem.premium:
+        byline.append("LeetCode Premium")
+    lines += [
+        f"**[{_escape(problem.title)}]({_link_target(problem.url)})**",
+        "",
+        f"_{_escape(' · '.join(byline))}_",
+        "",
+        _escape(problem.statement),
+        "",
+        "**Example:**",
+        "",
+        f"- Input: `{problem.example_input}`",
+        f"- Output: `{problem.example_output}`",
+        "",
+        f"**Constraints:** {_escape('; '.join(problem.constraints))}",
+        "",
+        "**Think about:**",
+        "",
+        *(f"{number}. {prompt}" for number, prompt in enumerate(PROMPTS, start=1)),
+        "",
+    ]
+    if exercise.shown_hint:
+        lines += [f"**Hint:** {_escape(exercise.shown_hint)}", ""]
+    return lines + ["_No implementation required: describe your approach in words._", ""]
 
 
 def _story_lines(number: int, story: Story) -> list[str]:

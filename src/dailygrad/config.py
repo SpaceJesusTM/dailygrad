@@ -17,6 +17,9 @@ DEFAULT_KEYWORDS = [
     "Qwen", "DeepSeek", "Hugging Face", "Ollama", "PyTorch", "MCP",
 ]  # fmt: skip
 
+# The LeetCode tracks a rotation may name. The catalog (leetcode.toml) says which problems are in each.
+LEETCODE_TRACKS = ("neetcode-150", "amd", "vanguard")
+
 
 class ConfigError(ValueError):
     pass
@@ -89,6 +92,17 @@ class OllamaConfig:
 
 
 @dataclass
+class LeetCodeConfig:
+    enabled: bool = True
+    # One track per day, repeating. A track may be left out or listed more than once.
+    rotation: list[str] = field(default_factory=lambda: list(LEETCODE_TRACKS))
+    model_hints: bool = True  # the model words the digest's hint; false prints the catalog's hint as written
+    feedback_budget_seconds: int = 120  # for one `dailygrad leetcode answer` or `review`
+    # How long the model stays loaded after an interactive reply, so a follow-up is quick. 0 unloads at once.
+    keep_alive_seconds: int = 300
+
+
+@dataclass
 class Config:
     data_dir: str = "data"  # relative paths resolve against the working directory
     final_story_count: int = 5  # stories in the digest, when that many candidates are available
@@ -99,6 +113,7 @@ class Config:
     hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
     huggingface: HuggingFaceConfig = field(default_factory=HuggingFaceConfig)
     rss: RssConfig = field(default_factory=RssConfig)
+    leetcode: LeetCodeConfig = field(default_factory=LeetCodeConfig)
 
     @property
     def db_path(self) -> Path:
@@ -123,6 +138,10 @@ class Config:
     @property
     def source_preferences_path(self) -> Path:
         return Path(self.data_dir).expanduser() / "source_preferences.json"
+
+    @property
+    def leetcode_preferences_path(self) -> Path:
+        return Path(self.data_dir).expanduser() / "leetcode_preferences.json"
 
 
 def find_config_file(path: Path | None = None) -> Path | None:
@@ -170,6 +189,11 @@ def load_config(path: Path | None = None) -> Config:
         raise ConfigError("run_budget_seconds and ollama.timeout_seconds must be at least 1")
     if config.hackernews.keyword_boost < 1:
         raise ConfigError("hackernews.keyword_boost must be at least 1")
+    rotation = config.leetcode.rotation
+    if not rotation or not all(track in LEETCODE_TRACKS for track in rotation):
+        raise ConfigError(f"leetcode.rotation must list one or more of: {', '.join(LEETCODE_TRACKS)}")
+    if config.leetcode.feedback_budget_seconds < 1 or config.leetcode.keep_alive_seconds < 0:
+        raise ConfigError("leetcode.feedback_budget_seconds must be at least 1 and leetcode.keep_alive_seconds 0 or more")
     return config
 
 

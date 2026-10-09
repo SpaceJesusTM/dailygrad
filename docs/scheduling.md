@@ -14,12 +14,16 @@ A run is bounded in time. Model requests stop `run_budget_seconds` (450 by defau
 the run starts, and the run then ends within about a minute, so a scheduler's own timeout
 can be set a little above that. See "When Ollama is slow or fails" in the README.
 
-Running more than once a day is safe: stories are not repeated, and the micro-lesson stays
-the same until the next calendar day.
+Running more than once a day is safe: stories are not repeated, and the micro-lesson and the
+LeetCode exercise stay the same until the next calendar day.
 
 `dailygrad sources` can be used while a schedule is active. A change is picked up by the
 next scheduled run. Give it the same `--config` (or working directory) as the scheduled
 job, so both use the same data directory.
+
+The same holds for `dailygrad leetcode`: its commands only follow up on the exercise a run
+has shown. They never choose a problem or write a digest, so they cannot disturb a schedule.
+See [leetcode.md](leetcode.md).
 
 The examples assume DailyGrad is installed in a virtual environment at
 `/home/you/dailygrad/.venv` with its config at `/home/you/dailygrad/dailygrad.toml`.

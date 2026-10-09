@@ -10,6 +10,10 @@ codes. They are described in [sources.md](sources.md).
 `dailygrad history` lists and prints the archived digest of every run. It is described
 under [Run archives](#run-archives).
 
+`dailygrad leetcode` follows up on the digest's LeetCode exercise: hints, feedback on an
+answer, the reference approach. Its JSON output and exit codes are described in
+[leetcode.md](leetcode.md).
+
 ## What a run produces
 
 | Output | Where | Content |
@@ -24,6 +28,10 @@ under [Run archives](#run-archives).
 
 A run reads `<data_dir>/source_preferences.json` if it exists, and never writes it. If the
 file exists but is invalid, the run stops with exit code 2: see [sources.md](sources.md).
+
+A run also reads `<data_dir>/leetcode_preferences.json` if it exists, and never writes it.
+It says whether the exercise shows a hint. If that file is invalid the run goes ahead and
+shows no hint: see [leetcode.md](leetcode.md#hints).
 
 `data_dir` is `data` by default. `dailygrad config` prints the absolute paths in use.
 
@@ -133,7 +141,7 @@ upgrade preserves the digest it follows without anyone running the backfill.
 | Code | Meaning | Files written |
 |---|---|---|
 | 0 | The digest was produced normally. `status` is `"ok"`. | Yes |
-| 1 | Degraded: at least one model request failed, so a summary or the lesson is missing. `status` is `"degraded"`. A crash also exits with 1, with a Python traceback on stderr and nothing printed on stdout. | Yes if degraded, no if crashed |
+| 1 | Degraded: at least one model request failed, so a summary or the lesson is missing, or the LeetCode exercise could not be prepared. `status` is `"degraded"`. A crash also exits with 1, with a Python traceback on stderr and nothing printed on stdout. | Yes if degraded, no if crashed |
 | 2 | The configuration is invalid, the source preferences file exists but cannot be understood, or the command line could not be parsed. Nothing is fetched. | No |
 
 ## The JSON document
@@ -179,6 +187,37 @@ Text fields hold plain text, without Markdown escaping.
   "recall": {
     "topic_id": "nn-tensor-shapes",
     "question": "…"
+  },
+  "leetcode": {
+    "problem_id": "two-sum",
+    "number": 1,
+    "title": "Two Sum",
+    "url": "https://leetcode.com/problems/two-sum/",
+    "difficulty": "easy",
+    "premium": false,
+    "track": "amd",
+    "review": false,
+    "sources": [
+      {"id": "neetcode-150", "name": "NeetCode 150", "kind": "curriculum", "publisher": "NeetCode"},
+      {"id": "amd", "name": "AMD", "kind": "company", "publisher": "Interview Solver"}
+    ],
+    "company_tags": ["AMD"],
+    "statement": "…",
+    "example": {"input": "nums = [2, 7, 11, 15], target = 9", "output": "[0, 1]"},
+    "constraints": ["2 ≤ n ≤ 10^4", "exactly one valid pair exists"],
+    "prompts": ["What data structure would you choose?", "…"],
+    "hints_enabled": true,
+    "hint": "…",
+    "hint_source": "model",
+    "reference_solution": {
+      "source": "catalog",
+      "complete": true,
+      "topic": "Arrays & Hashing",
+      "approach": "…",
+      "time": "O(n)",
+      "space": "O(n)",
+      "edge_cases": ["no valid pair", "the same value used twice"]
+    }
   }
 }
 ```
@@ -193,13 +232,14 @@ A complete real example is in [`examples/sample-digest.json`](../examples/sample
 | `run_id` | integer | Identifies the DailyGrad execution that produced this digest. See below. |
 | `date` | string | Local calendar date of the digest, `YYYY-MM-DD`. |
 | `generated_at` | string | When the run started, ISO 8601 in UTC to the second. |
-| `status` | string | `"ok"`, or `"degraded"` if a model request failed for any story or for the lesson. Matches exit codes 0 and 1. |
+| `status` | string | `"ok"`, or `"degraded"` if a model request failed for any story or for the lesson, or if the LeetCode exercise is switched on and could not be prepared. Matches exit codes 0 and 1. |
 | `model` | string | The Ollama model the run was configured to use. |
 | `stories` | array | The digest's stories, in digest order. Empty on a day with no new stories. |
 | `failed_sources` | array of strings | Names of news sources that could not be fetched. A failed source does not make the run degraded. |
 | `sources` | array | Every available news source and whether this run fetched it. See below. Digests written before this key was added do not have it. |
 | `lesson` | object or `null` | The micro-lesson. `null` if lesson generation failed. |
 | `recall` | object or `null` | The recall question shown with the lesson. `null` on days without one, and when `lesson` is `null`. |
+| `leetcode` | object or `null` | The day's LeetCode exercise. See below. `null` when exercises are switched off in the config file, and when one could not be prepared (the run is then degraded). Digests written before this key was added do not have it. |
 
 ### Run ID
 
@@ -265,3 +305,74 @@ It still counts as shown.
 |---|---|---|
 | `topic_id` | string | ID of the earlier topic being asked about. |
 | `question` | string | The question. The answer is deliberately not included. |
+
+### LeetCode
+
+The day's exercise. Every key but the last is what the digest shows, and none of them
+gives the answer away. The last, `reference_solution`, **is the answer**: it is there for a
+program that gives feedback on the exercise, and is described [below](#reference-solution).
+A consumer that displays or summarises a digest must leave that key out. The Markdown never
+contains it. The firmer hints and the catalog's spoiler words are in neither: see
+[leetcode.md](leetcode.md).
+
+| Key | Type | Meaning |
+|---|---|---|
+| `problem_id` | string | The problem's permanent ID in the catalog: LeetCode's slug. |
+| `number` | integer | LeetCode's problem number. |
+| `title` | string | The problem's title on LeetCode. |
+| `url` | string | Link to the problem on LeetCode. |
+| `difficulty` | string | `"easy"`, `"medium"` or `"hard"`, as LeetCode rates it. |
+| `premium` | boolean | `true` if LeetCode shows the full problem only to subscribers. The digest is complete either way. |
+| `track` | string | The track whose day it was: `"neetcode-150"`, `"amd"` or `"vanguard"`. Always one of the IDs in `sources`. |
+| `review` | boolean | `true` if the problem was shown on an earlier day: the track had nothing new left. |
+| `sources` | array | Every list that holds the problem, each with `id`, `name`, `kind` (`"curriculum"` or `"company"`) and `publisher`. |
+| `company_tags` | array of strings | The names of the `"company"` sources. These are a third party's tags, published by the source's `publisher`; they are not LeetCode's own company tags. |
+| `statement` | string | A short summary of the task, written for DailyGrad. |
+| `example` | object | One example, as `input` and `output` strings. |
+| `constraints` | array of strings | The constraints that matter for choosing an approach. |
+| `prompts` | array of strings | The questions the exercise asks. Their answers are not included. |
+| `hints_enabled` | boolean | Whether hints were switched on when the digest was written. |
+| `hint` | string or `null` | The one hint the digest shows. `null` while hints are off. |
+| `hint_source` | string or `null` | `"model"` if the local model worded the hint, `"catalog"` if it is the catalog's hint as written. `null` exactly when `hint` is `null`. |
+| `reference_solution` | object or `null` | The catalog's reference answer. See below. `null` if the catalog has none for the problem. Digests written before this key was added do not have it. |
+
+`leetcode` was added to schema version 1 as a new key, the last in the document. Nothing
+else changed, so a consumer that ignores unknown keys is unaffected. The Markdown gained a
+`## LeetCode Micro-Lesson` section after the lesson, and has none when `leetcode` is `null`
+because exercises are switched off.
+
+The same problem is shown again on a rerun the same day, with the same hint. Switching hints
+off or on changes `hints_enabled` and `hint` from the next run, and never the problem.
+
+#### Reference solution
+
+`reference_solution` is the answer to the exercise, for a program that tutors on it: it can
+check a person's approach against it, and explain it when asked. It is taken from the
+catalog as written. The model writes none of it, and it is the same whether hints are on or
+off and whether or not Ollama could be reached.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `source` | string | Where it comes from. Always `"catalog"`: the entry was validated when the catalog was loaded. |
+| `complete` | boolean | `true` if the approach, both complexities and the edge cases are all there. `false` if any of them is `null`. |
+| `topic` | string or `null` | The pattern the catalog files the problem under, such as `"Two Pointers"` or `"1-D Dynamic Programming"`. |
+| `approach` | string or `null` | The reference approach in a few sentences. It names the data structure and the algorithm, and where the catalog records one, an alternative and what it costs. |
+| `time` | string or `null` | The time complexity of that approach, written like `O(n)`. |
+| `space` | string or `null` | Its space complexity. |
+| `edge_cases` | array of strings, or `null` | The edge cases worth naming. |
+
+It may be complete, partial or `null`, and a consumer has to accept all three:
+
+- **Complete:** every key has a value. This is the case for all 182 problems of the catalog
+  as it stands.
+- **Partial:** a part the catalog does not have is `null`, never an empty string or list,
+  and `complete` is `false`. Nothing is filled in to make up for it.
+- **`null`:** the catalog has no approach, complexity or edge case for the problem. The rest
+  of the exercise is unaffected.
+
+There are no separate lists of data structures, algorithms or trade-offs: the catalog does
+not hold them as fields. They are in the wording of `approach`.
+
+The key was added to `leetcode` without changing `schema_version`. `dailygrad leetcode status`
+does not print it, and `dailygrad leetcode review` gives the same material with the model's
+explanation.
