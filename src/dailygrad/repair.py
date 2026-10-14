@@ -170,7 +170,7 @@ def _read(source: dict) -> tuple[dict, str]:
 
 def _check_markdown(markdown: str, document: dict, numbers: list[int], lesson_missing: bool) -> None:
     """Raise RepairError unless the Markdown can take every repair that may be made: a trial with stand-ins."""
-    stand_in = Story(_candidate(document["stories"][0], datetime.now(timezone.utc)), "-", "-") if numbers else None
+    stand_in = Story(_candidate(document["stories"][numbers[0] - 1], datetime.now(timezone.utc)), "-", "-") if numbers else None
     lesson = Lesson(Topic("-", "-", "-", 1, "-", (), "-"), "-") if lesson_missing else None
     try:
         render.repair_markdown(markdown, dict.fromkeys(numbers, stand_in), lesson)
