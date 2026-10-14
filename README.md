@@ -404,6 +404,7 @@ assistant needs to relay answers.
 |---|---|
 | stdout | The digest as Markdown. Logs go to stderr. |
 | `data/digests/runs/YYYY-MM-DD/run-ID-TIME.md` and `.json` | This run's digest, archived once and never replaced. |
+| `data/digests/repairs/YYYY-MM-DD/run-ID-TIME-rN.md` and `.json` | Revision N of that run's digest, written by `dailygrad repair`; also never replaced. |
 | `data/digests/YYYY-MM-DD.md` | The same digest: the day's last run. |
 | `data/digests/YYYY-MM-DD.json` | The digest as structured data: the day's last run. |
 | `data/latest.md` | The most recent digest. |
@@ -435,6 +436,32 @@ either way, with the catalog's own hint, and that alone does not make a run degr
 
 A story whose page cannot be fetched is listed as a headline without a summary. That is
 not counted as a failure.
+
+### Repairing a degraded digest
+
+If Ollama was down or too slow, the digest it left can be completed later without picking
+new news:
+
+```sh
+dailygrad repair --run 11 --dry-run          # what would be retried; changes nothing
+dailygrad repair --run 11                    # retry it
+dailygrad repair --run 11 --date 2026-10-14  # name the day if the run ID was used twice
+```
+
+A repair keeps the same stories, in the same order, and every summary that succeeded. It
+asks the model again only for the stories marked as failed and, if it failed, the lesson.
+It selects nothing, fetches only those stories' pages, and leaves the LeetCode exercise and
+your progress alone. The run's archive is never changed: the completed digest is archived
+as a new revision of the same run, and `latest.*` and the dated files show it while they
+still hold that run. A repaired story counts as shown, and a repaired lesson moves the
+curriculum on by the one lesson the run should have given. If a later run has given a
+lesson since, the lesson is not generated, so the topics stay in order.
+
+Repeating a repair is safe: one that has nothing left to do changes nothing, and one that
+fails again writes nothing. It exits with 0 once the digest is complete, 1 while something
+is still missing, 2 if refused. `dailygrad history` lists each revision under its run, and
+`dailygrad history show 11 --revision 1` prints one. The details are in
+[`docs/output.md`](docs/output.md#repaired-revisions).
 
 ### Resetting story memory
 

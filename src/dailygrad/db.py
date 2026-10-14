@@ -316,6 +316,45 @@ def record_summaries(conn: sqlite3.Connection, run_id: int, stories: list[Story]
     )
 
 
+def record_repaired_showing(conn: sqlite3.Connection, run_id: int, story: Story, model: str, now: datetime) -> bool:
+    """Record a story that a repair summarised for run `run_id` as that run would have. Returns False if it changed nothing.
+
+    The run did not record it as shown, because the model failed on it. A repair records it now,
+    as the run would have had the model not failed: as the item's first showing, with its summary,
+    or, for an item shown before a story-memory reset, as a repeat showing. An item that a later
+    run has shown since keeps that showing, and nothing is changed: the later run's record stands.
+    """
+    row = conn.execute("SELECT id, shown_run_id FROM items WHERE url_key = ?", (story.candidate.url_key,)).fetchone()
+    if row is None:  # every shortlisted item is recorded as seen, so this is not a story of that run
+        return False
+    item_id, shown_run_id = row
+    summary = (story.what_happened, story.why_it_matters, story.evidence, model, now.isoformat())
+    if shown_run_id is None:
+        conn.execute("UPDATE items SET shown_run_id = ? WHERE id = ?", (run_id, item_id))
+        conn.execute(
+            "INSERT INTO summaries (item_id, run_id, what_happened, why_it_matters, evidence, model, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(item_id) DO NOTHING",
+            (item_id, run_id, *summary),
+        )
+        return True
+    shown_later = conn.execute(
+        "SELECT 1 FROM repeat_showings WHERE item_id = ? AND run_id > ? LIMIT 1", (item_id, run_id)
+    ).fetchone()
+    if shown_run_id >= run_id or shown_later:
+        return False
+    cursor = conn.execute(
+        "INSERT INTO repeat_showings (item_id, run_id, what_happened, why_it_matters, evidence, model, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(item_id, run_id) DO NOTHING",
+        (item_id, run_id, *summary),
+    )
+    return cursor.rowcount == 1
+
+
+def lessons_after(conn: sqlite3.Connection, run_id: int) -> bool:
+    """Whether a run after `run_id` has recorded a lesson, i.e. moved the curriculum on since."""
+    return conn.execute("SELECT 1 FROM lessons WHERE run_id > ? LIMIT 1", (run_id,)).fetchone() is not None
+
+
 def lesson_history(conn: sqlite3.Connection) -> list[str]:
     """Topic IDs of every lesson given, oldest first."""
     return [topic_id for (topic_id,) in conn.execute("SELECT topic_id FROM lessons ORDER BY id")]

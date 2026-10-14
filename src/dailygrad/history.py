@@ -9,6 +9,13 @@ all. A second run on the same day replaces them, so the archives are where each 
 with the same bytes as that run's latest.json and latest.md. The file name carries the run's
 whole identity (date, run id and generated_at), so a run after a database reset, which starts
 again at run 1, gets a name of its own. An archive is created once and never written again.
+
+A repair (repair.py) does not change a run's archive. Each repaired revision of the run is
+archived beside it, in the same way, numbered from 1:
+
+    <data_dir>/digests/repairs/YYYY-MM-DD/run-<run id>-<UTC time>-r<revision>.json
+    <data_dir>/digests/repairs/YYYY-MM-DD/run-<run id>-<UTC time>-r<revision>.md
+
 The layout is documented in docs/output.md.
 """
 
@@ -34,7 +41,10 @@ class HistoryError(Exception):
 
 
 def archive_paths(config: Config, document: dict) -> tuple[Path, Path]:
-    """Where a digest document's archive lives, as (JSON, Markdown). Raises HistoryError if it names no run."""
+    """Where a digest document's archive lives, as (JSON, Markdown). Raises HistoryError if it names no run.
+
+    A repaired revision of a run (its `repair` names the revision) is archived under repairs/.
+    """
     run_id, day, generated = document.get("run_id"), document.get("date"), document.get("generated_at")
     try:
         if type(run_id) is not int or run_id < 1 or not isinstance(day, str) or not isinstance(generated, str):
@@ -42,10 +52,25 @@ def archive_paths(config: Config, document: dict) -> tuple[Path, Path]:
         if date.fromisoformat(day).isoformat() != day:
             raise ValueError
         stamp = datetime.fromisoformat(generated).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        revision = revision_of(document)
     except ValueError:
         raise HistoryError("invalid_digest", "the document has no usable run_id, date and generated_at") from None
-    base = config.run_archive_dir / day / f"run-{run_id}-{stamp}"
+    if revision:
+        base = config.repair_archive_dir / day / f"run-{run_id}-{stamp}-r{revision}"
+    else:
+        base = config.run_archive_dir / day / f"run-{run_id}-{stamp}"
     return base.with_name(base.name + ".json"), base.with_name(base.name + ".md")
+
+
+def revision_of(document: dict) -> int:
+    """0 for a run's digest as the run wrote it, else the number of the repaired revision. ValueError if unusable."""
+    repair = document.get("repair")
+    if repair is None:
+        return 0
+    revision = repair.get("revision") if isinstance(repair, dict) else None
+    if type(revision) is not int or revision < 1:
+        raise ValueError("repair.revision is not a positive integer")
+    return revision
 
 
 def archive_run(config: Config, markdown: str | None, json_text: str) -> list[Path]:
@@ -139,6 +164,8 @@ def _entry(config: Config, path: Path) -> dict | None:
             "json": str(path.resolve()),
             "markdown": None,
         }
+        if revision_of(document):
+            entry = {"revision": revision_of(document), "repaired_at": document["repair"].get("repaired_at")} | entry
     except (OSError, ValueError, KeyError, TypeError, HistoryError) as exc:
         log.warning("skipping %s: %s", path, exc)
         return None
@@ -146,6 +173,27 @@ def _entry(config: Config, path: Path) -> dict | None:
     if markdown.is_file():
         entry["markdown"] = str(markdown.resolve())
     return entry
+
+
+def repairs(config: Config, run: dict) -> list[dict]:
+    """The repaired revisions of an archived run, oldest first, as archived_runs lists runs (plus `revision`).
+
+    Only a revision that is a valid digest of that same run, under its own name, counts.
+    """
+    stamp = Path(run["json"]).stem.rsplit("-", 1)[1]
+    directory = config.repair_archive_dir / run["date"]
+    found = []
+    for path in directory.glob(f"run-{run['run_id']}-{stamp}-r*.json") if directory.is_dir() else ():
+        entry = _entry(config, path)
+        if entry and entry.get("revision") and (entry["run_id"], entry["generated_at"]) == (run["run_id"], run["generated_at"]):
+            found.append(entry)
+    return sorted(found, key=lambda entry: entry["revision"])
+
+
+def latest_revision(config: Config, run: dict) -> dict:
+    """The newest revision of an archived run: its newest repair, or the run itself (revision 0)."""
+    revisions = repairs(config, run)
+    return revisions[-1] if revisions else {"revision": 0} | run
 
 
 def unarchived_runs(config: Config, archived: list[dict], day: str | None = None) -> list[dict]:

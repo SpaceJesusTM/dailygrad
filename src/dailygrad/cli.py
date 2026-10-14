@@ -1,4 +1,5 @@
-"""Command-line interface: `dailygrad run`, `config`, `sources`, `history`, `leetcode` and `reset-story-memory`."""
+"""Command-line interface: `dailygrad run`, `config`, `sources`, `history`, `repair`, `leetcode` and
+`reset-story-memory`."""
 
 import argparse
 import json
@@ -7,7 +8,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from dailygrad import __version__, db, history, leetcode, pipeline, preferences, tutor
+from dailygrad import __version__, db, history, leetcode, pipeline, preferences, repair, tutor
 from dailygrad.config import CONFIG_ENV_VAR, DEFAULT_CONFIG_FILE, Config, ConfigError, find_config_file, load_config
 from dailygrad.leetcode_catalog import CatalogError
 from dailygrad.sources import ALL, available_sources
@@ -29,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("config", parents=[config_option], help="show the settings a run would use, and where files go")
     add_sources_command(commands, config_option)
     add_history_command(commands, config_option)
+    add_repair_command(commands, config_option)
     add_leetcode_command(commands, config_option)
     reset = commands.add_parser(
         "reset-story-memory",
@@ -51,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(config_path)
         available_sources(config)  # rejects feed names that cannot be told apart
     except ConfigError as exc:
-        if args.command in ("sources", "history", "leetcode") and getattr(args, "json", False):
+        if args.command in ("sources", "history", "repair", "leetcode") and getattr(args, "json", False):
             print(json.dumps({"ok": False, "error": {"code": "invalid_config", "message": str(exc)}}, indent=2))
         print(f"dailygrad: {exc}", file=sys.stderr)
         return 2
@@ -63,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         return sources_command(config, args.action or "list", getattr(args, "names", []), getattr(args, "json", False))
     if args.command == "history":
         return history_command(config, args)
+    if args.command == "repair":
+        return repair_command(config, args)
     if args.command == "leetcode":
         return leetcode_command(config, args)
     if args.command == "reset-story-memory":
@@ -214,6 +218,10 @@ def add_history_command(commands, config_option: argparse.ArgumentParser) -> Non
     show = actions.add_parser("show", parents=[config_option, date_option], help="print one archived run's digest")
     show.add_argument("run_id", type=int, metavar="RUN_ID")
     show.add_argument("--markdown", action="store_true", help="print the Markdown digest instead of the JSON document")
+    show.add_argument(
+        "--revision", type=int, metavar="N",
+        help="a repaired revision of the run (see `dailygrad repair`); 0 is the digest as the run wrote it (the default)",
+    )  # fmt: skip
     actions.add_parser(
         "backfill",
         parents=[config_option, json_option],
@@ -233,6 +241,11 @@ def history_command(config: Config, args: argparse.Namespace) -> int:
     try:
         if action == "show":
             run = history.find_run(config, args.run_id, day)
+            if args.revision:
+                matches = [entry for entry in history.repairs(config, run) if entry["revision"] == args.revision]
+                if not matches:
+                    raise history.HistoryError("not_found", f"run {args.run_id} has no repaired revision {args.revision}")
+                run = matches[0]
             if args.markdown and not run["markdown"]:
                 raise history.HistoryError("no_markdown", f"run {args.run_id} was archived without its Markdown")
             print(Path(run["markdown" if args.markdown else "json"]).read_text(encoding="utf-8"), end="")
@@ -246,6 +259,8 @@ def history_command(config: Config, args: argparse.Namespace) -> int:
             return 0
         runs = history.archived_runs(config, day)
         missing = history.unarchived_runs(config, runs, day)
+        for run in runs:
+            run["repairs"] = history.repairs(config, run)
     except history.HistoryError as exc:
         return _history_refused(exc, as_json)
     except OSError as exc:
@@ -276,6 +291,10 @@ def history_table(runs: list[dict], missing: list[dict]) -> str:
             lesson = "yes" if run["has_lesson"] else "no"
             stories, status = str(run["story_count"]), str(run["status"])
             rows.append((run["date"], str(run["run_id"]), run["generated_at"], status, stories, lesson))
+            for revision in run.get("repairs", []):  # a repaired revision is not a run of its own: shown under it
+                lesson = "yes" if revision["has_lesson"] else "no"
+                label = f"  repair {revision['revision']}"
+                rows.append(("", label, str(revision["repaired_at"]), str(revision["status"]), str(revision["story_count"]), lesson))
         widths = [max(len(row[column]) for row in rows) for column in range(5)]
         lines += ["  ".join([*(cell.ljust(width) for cell, width in zip(row, widths)), row[5]]) for row in rows]
     else:
@@ -297,6 +316,82 @@ def backfill_report(results: list[dict]) -> str:
         note = "" if result["markdown"] else " (JSON only: no matching Markdown)"
         label = "archived " if result["outcome"] == "archived" else "already   "
         lines.append(f"{label} run {result['run_id']} of {result['date']}{note}")
+    return "\n".join(lines)
+
+
+def add_repair_command(commands, config_option: argparse.ArgumentParser) -> None:
+    command = commands.add_parser(
+        "repair",
+        parents=[config_option],
+        help="retry what the model failed on in an earlier digest; its stories stay the same",
+        description="Repair the digest of an earlier run: summarise again the stories the model failed on and "
+        "write the lesson if it failed, keeping the same stories in the same order and everything that "
+        "succeeded. Nothing is fetched but those stories' pages, no story is selected and the LeetCode exercise "
+        "is not changed. The run's archive is kept as it is; the repaired digest is archived as a new revision "
+        "of the run. A digest with nothing to repair is left alone, so the command can be repeated.",
+    )
+    command.add_argument("--run", type=int, required=True, metavar="RUN_ID", help="the run whose digest to repair")
+    command.add_argument("--date", metavar="YYYY-MM-DD", help="the run's day, if the run ID was used more than once")
+    command.add_argument("--dry-run", action="store_true", help="say what would be retried; ask the model nothing, write nothing")
+    command.add_argument("--json", action="store_true", help="print the result as JSON, for another program")
+
+
+def repair_command(config: Config, args: argparse.Namespace) -> int:
+    """Repair one run's digest. Exits with 0 if it is complete now, 1 if it is still degraded, 2 if refused."""
+    day = args.date
+    try:
+        if day is not None and (len(day) != 10 or date.fromisoformat(day).isoformat() != day):
+            raise ValueError
+    except ValueError:
+        return _history_refused(history.HistoryError("bad_date", f"--date must be YYYY-MM-DD, got {day!r}"), args.json)
+    if args.run < 1:
+        return _history_refused(history.HistoryError("bad_run_id", "--run must be a positive run ID"), args.json)
+    try:
+        result = repair.repair(config, args.run, day, dry_run=args.dry_run)
+    except history.HistoryError as exc:
+        return _history_refused(exc, args.json)
+    except (db.sqlite3.Error, OSError, ValueError) as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": {"code": "failed", "message": str(exc)}}, indent=2))
+        print(f"dailygrad: the repair failed: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2) if args.json else repair_text(result))
+    return 0 if result["status"] == "ok" and "current_files_error" not in result else 1
+
+
+def repair_text(result: dict) -> str:
+    """A repair's result for a person. The JSON form carries the same facts."""
+    name = f"Run {result['run_id']} of {result['date']}"
+
+    def parts(what: dict) -> str:
+        items = [f"stor{'y' if len(what['stories']) == 1 else 'ies'} {', '.join(map(str, what['stories']))}"] if what["stories"] else []
+        items += ["the lesson"] if what["lesson"] else []
+        items += ["the LeetCode exercise (not repairable)"] if what.get("leetcode") else []
+        return " and ".join(items) or "nothing"
+
+    outcome = result["outcome"]
+    if outcome == "nothing_to_repair":
+        line = f"{name} has nothing to repair (revision {result['revision']}, status {result['status']})."
+        if result["remaining"]["leetcode"]:
+            line += " Its LeetCode exercise is missing, which a repair does not regenerate."
+        return line + " Nothing was changed."
+    if outcome == "dry_run":
+        return f"{name}: a repair would retry {parts(result['attempted'])}. Dry run: nothing was changed."
+    lines = []
+    if outcome == "unchanged":
+        lines.append(f"{name}: the model failed again on {parts(result['attempted'])}. Nothing was written; "
+                     f"the digest stays at revision {result['revision']}, {result['status']}.")  # fmt: skip
+    else:
+        lines.append(f"{name}: repaired {parts(result['repaired'])}, as revision {result['revision']} ({result['status']}).")
+        if outcome == "partial":
+            lines.append(f"Still missing: {parts(result['remaining'])}. Repeating the repair retries only that.")
+        lines.append(f"The original digest is kept as it was. Revision {result['revision']}: {result['json']}")
+        if result["current_files"]:
+            lines.append(f"Also updated: the {' and '.join(result['current_files'])} digest files, which held this run.")
+        if "current_files_error" in result:
+            lines.append(f"The dated and latest files could not be updated: {result['current_files_error']}")
+    if result["lesson_note"] == "curriculum_moved_on":
+        lines.append("The lesson was not generated: a later run has given a lesson since, and this one would come out of order.")
     return "\n".join(lines)
 
 

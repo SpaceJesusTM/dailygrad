@@ -10,6 +10,9 @@ codes. They are described in [sources.md](sources.md).
 `dailygrad history` lists and prints the archived digest of every run. It is described
 under [Run archives](#run-archives).
 
+`dailygrad repair` completes a degraded digest as a new revision of its run. It is described
+under [Repaired revisions](#repaired-revisions).
+
 `dailygrad leetcode` follows up on the digest's LeetCode exercise: hints, feedback on an
 answer, the reference approach. Its JSON output and exit codes are described in
 [leetcode.md](leetcode.md).
@@ -136,6 +139,115 @@ nothing is reconstructed for it, and it stays in `not_archived`.
 A run does the same for `latest.json` before replacing it, so the first run after an
 upgrade preserves the digest it follows without anyone running the backfill.
 
+## Repaired revisions
+
+`dailygrad repair --run ID [--date YYYY-MM-DD]` completes a degraded run's digest. It keeps
+that digest's stories (the same `id`, `title`, `source` and `url`, in the same order) and
+every summary that succeeded, and asks the model again only for each story with
+`model_failed` true and, if `lesson` is `null`, for the lesson. It selects no story and
+fetches no shortlist: only those stories' pages, and for a story whose page gives no text,
+its own source once, to find that story's description again. `leetcode`, `sources` and
+`failed_sources` are copied unchanged. An exercise that could not be prepared is not
+repaired.
+
+The run's archive is never written again. The repaired digest is a new **revision** of the
+same run, archived beside it, created once and never replaced:
+
+```
+<data_dir>/digests/repairs/2026-10-14/run-11-20261014T123000Z-r1.json
+<data_dir>/digests/repairs/2026-10-14/run-11-20261014T123000Z-r1.md
+```
+
+The name is the run's archive name with `-r` and the revision number. The run's own digest
+is revision 0. A repair starts from the newest revision, so a second repair retries only
+what is still missing.
+
+A revision is a document of the same layout, with the same `run_id`, `date` and
+`generated_at`: it is the same digest, completed, and **not a new run**. A consumer that
+compares `run_id` (and `generated_at`) with the last digest it handled sees no new digest.
+To tell a revision apart, read `repair`:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `repair` | object or `null` | `null` in a run's own digest. In a repaired revision: |
+| `repair.revision` | integer | 1 for the first repair, then 2, and so on. |
+| `repair.repaired_at` | string | When the repair was made, ISO 8601 in UTC. |
+| `repair.model` | string | The model the repair used. |
+| `repair.original_status` | string | The run's own `status`, usually `"degraded"`. |
+| `repair.previous_revision` | integer | The revision this one completed: 0 for the run's own digest. |
+| `repair.repaired` | object | What this repair filled in: `stories` (their 1-based numbers) and `lesson` (boolean). |
+| `repair.remaining` | object | What is still missing: `stories` (numbers), `lesson` and `leetcode` (booleans). |
+
+`status` is recomputed: `"ok"` once nothing is missing. A repaired story has its summary and
+`model_failed` false, exactly as if the model had not failed; `lesson` and `recall` are
+filled in the same way. The Markdown is the run's own, with only the failure notes of the
+repaired parts replaced by what a run would have written there.
+
+The dated and latest files are replaced by the revision, Markdown first, only while they
+hold that run (the same `run_id`, `date` and `generated_at`). A later run's files are left
+alone. A run's `preserve_latest` and `history backfill` recognise a revision there as
+already archived.
+
+The database is changed as the run would have changed it: a repaired story is recorded as
+shown by that run, with its summary, unless a later run has shown it since; a repaired
+lesson is recorded for the run, which moves the curriculum on by that one lesson. If another
+run that day gave a lesson, that lesson is used and nothing is recorded. If a run after it
+has given a lesson, none is generated (`lesson_note` `"curriculum_moved_on"`). No run is
+recorded, and story memory, source preferences and the LeetCode exercise are not touched.
+
+`dailygrad history --json` gives each run a `repairs` list (with `revision` and
+`repaired_at` added to the usual keys), and `dailygrad history show ID --revision N` prints
+one. `history show ID` without it prints the run's own digest, as before.
+
+### The repair command
+
+`dailygrad repair --run ID [--date YYYY-MM-DD] [--dry-run] [--json]`. With `--json` it prints:
+
+```json
+{
+  "ok": true,
+  "outcome": "repaired",
+  "run_id": 11,
+  "date": "2026-10-14",
+  "generated_at": "2026-10-14T12:30:00+00:00",
+  "previous_revision": 0,
+  "revision": 1,
+  "written": true,
+  "status": "ok",
+  "attempted": {"stories": [2, 4, 5], "lesson": true},
+  "repaired": {"stories": [2, 4, 5], "lesson": true},
+  "remaining": {"stories": [], "lesson": false, "leetcode": false},
+  "lesson_note": null,
+  "current_files": ["dated", "latest"],
+  "json": "/home/you/dailygrad/data/digests/repairs/2026-10-14/run-11-20261014T123000Z-r1.json",
+  "markdown": "/home/you/dailygrad/data/digests/repairs/2026-10-14/run-11-20261014T123000Z-r1.md"
+}
+```
+
+| `outcome` | Meaning | Written |
+|---|---|---|
+| `repaired` | Everything that was missing is filled in; `status` is `"ok"`. | A new revision |
+| `partial` | Some of it is filled in; `remaining` says what is not. | A new revision |
+| `unchanged` | The model failed again, or no page text could be found. | Nothing |
+| `nothing_to_repair` | No story is marked failed and the lesson is there. | Nothing |
+| `dry_run` | `attempted` is what a repair would retry. | Nothing |
+
+`revision`, `status`, `json` and `markdown` describe the newest revision after the command.
+`current_files` lists the files the revision replaced. If those could not be written, the
+revision is still archived and recorded, and `current_files_error` says why.
+
+It exits with 0 when the newest revision's `status` is `"ok"`, with 1 while it is still
+degraded (whether or not this repair wrote anything) or a file or database error stopped it,
+and with 2 if refused: `not_found`, `ambiguous_run`, `bad_date`, `bad_run_id`, `no_markdown`
+(an archive without its Markdown), `markdown_mismatch` (its Markdown is not DailyGrad's
+rendering of it), `invalid_digest`, `concurrent_repair` (another repair wrote a revision
+meanwhile; nothing was written), `archive_conflict` and `invalid_config`. A refusal with
+`--json` prints `{"ok": false, "error": {"code": …, "message": …}}`. Nothing is written
+before the model work is done. The revision's archive and its database changes are then
+written in one transaction, so an interrupted repair leaves neither behind. The dated and
+latest files are replaced while that transaction still holds the database's write lock, so
+a run that finishes at the same moment cannot have its files overwritten.
+
 ## Exit codes
 
 | Code | Meaning | Files written |
@@ -218,7 +330,8 @@ Text fields hold plain text, without Markdown escaping.
       "space": "O(n)",
       "edge_cases": ["no valid pair", "the same value used twice"]
     }
-  }
+  },
+  "repair": null
 }
 ```
 
@@ -240,6 +353,7 @@ A complete real example is in [`examples/sample-digest.json`](../examples/sample
 | `lesson` | object or `null` | The micro-lesson. `null` if lesson generation failed. |
 | `recall` | object or `null` | The recall question shown with the lesson. `null` on days without one, and when `lesson` is `null`. |
 | `leetcode` | object or `null` | The day's LeetCode exercise. See below. `null` when exercises are switched off in the config file, and when one could not be prepared (the run is then degraded). Digests written before this key was added do not have it. |
+| `repair` | object or `null` | `null` in a run's own digest; in a repaired revision of it, what was repaired. See [Repaired revisions](#repaired-revisions). Added without changing `schema_version`; digests written before it do not have it. |
 
 ### Run ID
 

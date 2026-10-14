@@ -697,7 +697,7 @@ def test_every_earlier_key_keeps_its_place_and_meaning(config, fake_web, model, 
     pipeline.run(config, now=NOW)
 
     document = read_latest(config)
-    assert list(document) == [*EARLIER_KEYS, "leetcode"]  # one key added at the end; schema version unchanged
+    assert list(document) == [*EARLIER_KEYS, "leetcode", "repair"]  # keys added at the end; schema version unchanged
     assert document["schema_version"] == output.SCHEMA_VERSION == 1
     assert len(document["stories"]) == 3 and document["lesson"]["topic_id"] == SCHEDULE[0].id
     assert document["lesson"]["lesson"] == lesson_text(SCHEDULE[0].title) and document["recall"] is None

@@ -415,6 +415,7 @@ def test_latest_json_describes_the_same_digest(config, fake_web, model, fake_art
         },
         "recall": {"topic_id": SCHEDULE[0].id, "question": SCHEDULE[0].question},
         "leetcode": None,  # switched off in this file's config
+        "repair": None,  # a run's own digest, not a repaired revision
     }
     assert f"**{SCHEDULE[2].title}**" in digest
 

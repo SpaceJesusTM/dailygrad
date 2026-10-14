@@ -128,6 +128,10 @@ class Config:
         return self.digest_dir / "runs"
 
     @property
+    def repair_archive_dir(self) -> Path:
+        return self.digest_dir / "repairs"
+
+    @property
     def latest_markdown_path(self) -> Path:
         return Path(self.data_dir).expanduser() / "latest.md"
 

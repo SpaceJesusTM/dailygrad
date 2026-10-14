@@ -50,6 +50,7 @@ def digest_document(
         "lesson": _lesson(lesson),
         "recall": _recall(lesson),
         "leetcode": leetcode_document(exercise),
+        "repair": None,  # a run's own digest; a repaired revision of it says what was repaired (repair.py)
     }
 
 
@@ -180,6 +181,31 @@ def write_outputs(config: Config, day: date, markdown: str, document: dict) -> N
     except BaseException:
         history.discard(archived)  # the run is rolled back, so no archive may name it
         raise
+
+
+def replace_current(config: Config, document: dict, markdown: str) -> list[str]:
+    """Put a repaired revision of a run in the dated and latest files, each only while it still holds that run.
+
+    Returns which were replaced: "dated", "latest", both or neither. A later run's files are
+    never touched. The revision must already be archived.
+    """
+    json_text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    identity = (document["run_id"], document["date"], document["generated_at"])
+    replaced = []
+    dated = dated_markdown_path(config, date.fromisoformat(document["date"]))
+    for name, json_path, markdown_path in (
+        ("dated", dated.with_suffix(".json"), dated),
+        ("latest", config.latest_json_path, config.latest_markdown_path),
+    ):
+        try:
+            held = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(held, dict) and (held.get("run_id"), held.get("date"), held.get("generated_at")) == identity:
+            write_atomic(markdown_path, markdown)  # Markdown first, as write_outputs does
+            write_atomic(json_path, json_text)
+            replaced.append(name)
+    return replaced
 
 
 def write_atomic(path: Path, text: str) -> None:

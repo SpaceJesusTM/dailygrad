@@ -277,7 +277,7 @@ def test_cli_history_lists_runs_as_a_table_and_as_json(in_tmp, make_candidate, c
     assert cli.main(["history", "list", "--json", "--date", "2026-10-08"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["ok"] is True and [run["run_id"] for run in result["runs"]] == [3]
-    assert list(result["runs"][0]) == ["run_id", "date", "generated_at", "status", "story_count", "has_lesson", "json", "markdown"]
+    assert list(result["runs"][0]) == ["run_id", "date", "generated_at", "status", "story_count", "has_lesson", "json", "markdown", "repairs"]
     assert result["not_archived"] == [{"run_id": 2, "date": "2026-10-08", "recorded_at": "2026-10-08T09:00:00+00:00"}]
 
     assert cli.main(["history", "--date", "2026-10-09", "--json"]) == 0

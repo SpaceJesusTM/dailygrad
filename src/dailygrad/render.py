@@ -7,6 +7,13 @@ from dailygrad.leetcode_catalog import PROMPTS
 from dailygrad.models import Exercise, Lesson, Story
 
 EVIDENCE_NOTES = {"excerpt": "summarised from the feed excerpt; the full article could not be retrieved"}
+MODEL_FAILED_NOTE = "_Not summarised: the local model request failed. This story may return in a later digest._"
+NO_LESSON_NOTE = "_No lesson today: the local model request failed. The topic will be used in the next run._"
+LESSON_HEADING = "## AI Micro-Lesson"
+
+
+class RepairMismatch(ValueError):
+    """The Markdown is not the rendering a repair expects, so it is not patched."""
 
 
 def render_digest(
@@ -45,9 +52,9 @@ def describes(markdown: str, document: dict) -> bool:
 
 
 def _lesson_lines(lesson: Lesson | None) -> list[str]:
-    lines = ["## AI Micro-Lesson", ""]
+    lines = [LESSON_HEADING, ""]
     if lesson is None:
-        return lines + ["_No lesson today: the local model request failed. The topic will be used in the next run._", ""]
+        return lines + [NO_LESSON_NOTE, ""]
     lines += [f"**{_escape(lesson.topic.title)}**", "", _escape(lesson.text), ""]
     if lesson.recall:
         lines += [f"**Quick recall:** {_escape(lesson.recall.question)}", ""]
@@ -113,15 +120,45 @@ def _story_lines(number: int, story: Story) -> list[str]:
         byline += f" ({EVIDENCE_NOTES[story.evidence]})"
     lines = [f"### {number}. [{_escape(candidate.title)}]({_link_target(candidate.url)})", "", f"_{byline}_", ""]
     if story.what_happened:
-        lines += [
-            f"**What happened:** {_escape(story.what_happened)}",
-            "",
-            f"**Why it matters:** {_escape(story.why_it_matters)}",
-            "",
-        ]
+        lines += [*_summary_lines(story), ""]
     elif story.model_failed:
-        lines += ["_Not summarised: the local model request failed. This story may return in a later digest._", ""]
+        lines += [MODEL_FAILED_NOTE, ""]
     return lines
+
+
+def _summary_lines(story: Story) -> list[str]:
+    return [f"**What happened:** {_escape(story.what_happened)}", "", f"**Why it matters:** {_escape(story.why_it_matters)}"]
+
+
+def repair_markdown(markdown: str, stories: dict[int, Story], lesson: Lesson | None) -> str:
+    """A digest's Markdown with the given stories (by number) summarised and, if given, the lesson filled in.
+
+    Only the failure notes of those parts are replaced, with the lines render_digest writes for
+    them, so the result is what the run would have rendered had the model not failed. Everything
+    else is kept byte for byte: titles, bylines, the LeetCode exercise. Raises RepairMismatch if
+    a part is not the failure note this module writes, which means the Markdown is not its rendering.
+    """
+    lines = markdown.split("\n")
+    for number, story in stories.items():
+        starts = [i for i, line in enumerate(lines) if line.startswith(f"### {number}. [")]
+        if len(starts) != 1:
+            raise RepairMismatch(f"story {number} is not in the Markdown exactly once")
+        at = starts[0]
+        block = lines[at + 1 : at + 6]
+        if len(block) < 5 or block[0] or block[2] or block[4] or block[3] != MODEL_FAILED_NOTE:
+            raise RepairMismatch(f"story {number} is not marked as failed in the Markdown")
+        if not (block[1].startswith("_") and block[1].endswith("_")):
+            raise RepairMismatch(f"story {number} has no byline in the Markdown")
+        if story.evidence in EVIDENCE_NOTES:
+            lines[at + 2] = f"{block[1][:-1]} ({EVIDENCE_NOTES[story.evidence]})_"
+        lines[at + 4 : at + 5] = _summary_lines(story)
+    if lesson is not None:
+        failed = [LESSON_HEADING, "", NO_LESSON_NOTE, ""]
+        starts = [i for i in range(len(lines)) if lines[i : i + 4] == failed]
+        if len(starts) != 1:
+            raise RepairMismatch("the lesson is not marked as failed in the Markdown")
+        lines[starts[0] : starts[0] + 4] = _lesson_lines(lesson)
+    return "\n".join(lines)
 
 
 def _escape(text: str) -> str:
