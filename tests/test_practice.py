@@ -1007,6 +1007,16 @@ def test_the_exercise_in_progress_counts_only_if_it_is_in_the_scope(config):
     assert vanguard["active_in_scope"] is False and vanguard["freed_exercises"] == 32  # nothing is in progress now
 
 
+@pytest.mark.parametrize("mode", ["coverage", "learning"])
+def test_a_question_reset_just_after_it_was_completed_is_not_given_straight_back(config, mode):
+    config.leetcode.sources, config.leetcode.mode = ["amd"], mode
+    assert practise(config, 1) == pool("amd")[:1]  # completed, nothing in progress
+
+    tutor.restart_questions(config, True, scope("amd"), now=at(1))
+
+    assert practise(config, 2, start=2) == [pool("amd")[1], pool("amd")[0]]  # the next first, then it again
+
+
 def test_repeating_a_source_reset_changes_nothing_until_something_is_assigned(config):
     config.leetcode.sources = ["amd"]
     practise(config, 3)

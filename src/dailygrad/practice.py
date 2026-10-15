@@ -402,20 +402,29 @@ def choose(catalog: Catalog, current: Settings, state: Snapshot, today: date, sk
     if current.mode == "coverage":
         after = state.passes[-1][1] if state.passes else state.start
         encountered = {entry.problem_id for entry in state.history if entry.id > after}
-        for problem in pool:
-            if problem.id not in encountered:
-                return Choice(problem, "coverage", current.sources, encounter(problem))
+        waiting = _not_straight_back([problem for problem in pool if problem.id not in encountered], last)
+        if waiting:
+            return Choice(waiting[0], "coverage", current.sources, encounter(waiting[0]))
         return Waiting("coverage", current.sources, "coverage_complete")
     if current.mode == "loop":
         cycle, remaining, done = _open_cycle(catalog, current, state)
         remaining = [problem_id for problem_id in remaining if problem_id not in skip]
         if not remaining:
             return None
-        if len(remaining) > 1 and remaining[0] == last:  # a reset question back in the cycle: never twice in a row
-            remaining = remaining[1:]
-        problem = catalog.get(remaining[0])
+        problem = catalog.get(_not_straight_back(remaining, last, key=lambda problem_id: problem_id)[0])
         return Choice(problem, "loop", current.sources, encounter(problem), cycle=cycle, position=done + 1)
-    return _learning_choice(pool, current, state, today, encounter)
+    return _learning_choice(pool, current, state, today, encounter, last)
+
+
+def _not_straight_back(candidates: list, last: str | None, key=lambda problem: problem.id) -> list:
+    """The candidates in order, but not beginning with the problem assigned last while another is left.
+
+    Only a reset (or a fresh coverage pass) can make the problem just assigned a candidate again:
+    it is given after the next one, never twice in a row.
+    """
+    if len(candidates) > 1 and key(candidates[0]) == last:
+        return [candidates[1], candidates[0], *candidates[2:]]
+    return candidates
 
 
 def _open_cycle(catalog: Catalog, current: Settings, state: Snapshot) -> tuple[db.Cycle | None, list[str], int]:
@@ -521,7 +530,9 @@ def _schedule(record: _Record | None, current: Settings) -> tuple[str, date | No
     return "review", max(due, deferred) if deferred else due, due
 
 
-def _learning_choice(pool: list[Problem], current: Settings, state: Snapshot, today: date, encounter) -> Choice | Waiting:
+def _learning_choice(
+    pool: list[Problem], current: Settings, state: Snapshot, today: date, encounter, last: str | None = None
+) -> Choice | Waiting:  # fmt: skip
     records = _records(state)
     offered = {entry.problem_id for entry in state.history}
     reviews, new, later = [], [], []
@@ -541,7 +552,7 @@ def _learning_choice(pool: list[Problem], current: Settings, state: Snapshot, to
         number = records[problem.id].reviews + 1
         return Choice(problem, "learning", current.sources, "review", review_number=number, due_on=due.isoformat())
     if new:  # never offered before, in the pool's order, ahead of those offered and not completed
-        problem = min(new, key=lambda candidate: candidate[:2])[2]
+        problem = _not_straight_back([candidate[2] for candidate in sorted(new, key=lambda candidate: candidate[:2])], last)[0]
         return Choice(problem, "learning", current.sources, encounter(problem))
     if later:
         return Waiting("learning", current.sources, "caught_up", min(later).isoformat())

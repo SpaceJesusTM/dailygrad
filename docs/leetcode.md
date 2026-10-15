@@ -316,6 +316,8 @@ reset`, which forgets settings and leaves progress alone. Exactly one scope is r
 - **The exercise in progress stays** the current exercise, untouched. If it is in the scope,
   it counts as its question's first in the new period, so neither completing nor skipping it
   brings it straight back. If not, the reset does not concern it.
+- **Never twice in a row.** In every mode, a question reset just after it was completed or
+  skipped is given again only after another question, where the pool has one.
 - **Nothing else changes.** The sources, mode, interval and maximum reviews stay as they
   are. Every exercise, outcome, showing, mark, exchange, pass and cycle stays in the
   database: only a row is added to `leetcode_practice_resets` (and the open cycle ended, as
