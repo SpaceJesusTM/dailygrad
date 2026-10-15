@@ -8,7 +8,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from dailygrad import __version__, db, history, leetcode, pipeline, preferences, repair, tutor
+from dailygrad import __version__, db, history, leetcode, pipeline, practice, preferences, render, repair, tutor
 from dailygrad.config import CONFIG_ENV_VAR, DEFAULT_CONFIG_FILE, Config, ConfigError, find_config_file, load_config
 from dailygrad.leetcode_catalog import CatalogError
 from dailygrad.sources import ALL, available_sources
@@ -102,6 +102,7 @@ def describe(config: Config, config_file: Path | None) -> str:
         ("Source preferences", config.source_preferences_path.resolve()),
         ("LeetCode", leetcode_summary(config)),
         ("LeetCode settings", config.leetcode_preferences_path.resolve()),
+        ("LeetCode practice", config.practice_preferences_path.resolve()),
     ]
     return "\n".join(f"{label + ':':20}{value}" for label, value in rows)
 
@@ -110,7 +111,14 @@ def leetcode_summary(config: Config) -> str:
     if not config.leetcode.enabled:
         return "off"
     hints = "on" if leetcode.read_hints(config.leetcode_preferences_path)[0] else "off"
-    return f"one exercise at a time, kept until completed or skipped, rotating {' -> '.join(config.leetcode.rotation)}; hints {hints}"
+    settings, problem = practice.settings_or_defaults(config)
+    mode = f"{settings.mode} practice from {' + '.join(settings.sources)}"
+    if settings.mode == "learning":
+        limit = "no limit" if settings.max_reviews is None else f"at most {settings.max_reviews}"
+        mode += f", reviews every {settings.review_interval_days} days ({limit})"
+    if problem:
+        mode += " (the practice settings file cannot be used; these are the config file's)"
+    return f"one exercise at a time, kept until completed or skipped; {mode}; hints {hints}"
 
 
 def add_sources_command(commands, config_option: argparse.ArgumentParser) -> None:
@@ -438,6 +446,40 @@ def add_leetcode_command(commands, config_option: argparse.ArgumentParser) -> No
         "next", parents=[*follow_up, exercise_option],
         help="move on to the next exercise now: the current one is recorded as skipped unless you completed it",
     )  # fmt: skip
+    add_practice_command(actions, options)
+
+
+def add_practice_command(actions, options: list[argparse.ArgumentParser]) -> None:
+    command = actions.add_parser(
+        "practice", parents=options,
+        help="the question sources and practice mode, and how far practice has come",
+        description="Which question sources make up the pool (each problem once, however many lists hold it) and how "
+        "the next exercise is chosen from it: coverage (every question once), loop (every question once per cycle, "
+        "reshuffled each cycle) or learning (reviews of completed questions at a fixed interval). A change applies "
+        "when the next exercise is chosen: the current one stays until you complete or skip it. History is never "
+        "changed or removed.",
+    )  # fmt: skip
+    subactions = command.add_subparsers(dest="practice_action")
+    subactions.add_parser("show", parents=options, help="the settings, the sources and progress in each mode (the default)")
+    change = subactions.add_parser(
+        "set", parents=options, help="change any of the settings at once; the others stay as they are",
+        description=f"Change the practice settings. An ID is a question source ({', '.join(practice.LEETCODE_TRACKS)}) "
+        f"or `{practice.ALL}`. Nothing changes unless every value given is valid.",
+    )  # fmt: skip
+    change.add_argument("--sources", nargs="+", metavar="ID", help="the sources to practise from, together")
+    change.add_argument("--mode", metavar="MODE", help=f"one of: {', '.join(practice.PRACTICE_MODES)}")
+    change.add_argument("--interval", metavar="DAYS", help="learning mode: days from a completion to the next review")
+    change.add_argument(
+        "--max-reviews", metavar="N", help=f'learning mode: reviews after the first completion, or "{practice.UNLIMITED}"'
+    )
+    subactions.add_parser("reset", parents=options, help="forget the settings made here: the config file's apply again")
+    restart = subactions.add_parser(
+        "restart-coverage", parents=options,
+        help="begin a fresh coverage pass, in which every question may be assigned again; history is kept",
+        description="Begin a fresh coverage pass: questions assigned so far may be assigned again, once each. Every "
+        "exercise, outcome and mark is kept. Without --confirm this only shows what would happen.",
+    )  # fmt: skip
+    restart.add_argument("--confirm", action="store_true", help="begin the new pass")
 
 
 def leetcode_command(config: Config, args: argparse.Namespace) -> int:
@@ -457,15 +499,17 @@ def leetcode_command(config: Config, args: argparse.Namespace) -> int:
             result = tutor.review(config, problem)
         elif action == "next":
             result = tutor.advance(config, exercise, problem)
+        elif action == "practice":
+            action, result = practice_command(config, args)
         elif args.state == "complete":
             action, result = "complete", tutor.complete(config, exercise, problem)
         elif exercise is not None:
             raise tutor.TutorError("bad_arguments", "--exercise goes with `mark complete` and `next` only")
         else:
             result = tutor.mark(config, args.state, problem)
-    except (tutor.TutorError, CatalogError, db.sqlite3.Error, OSError) as exc:
-        refused = isinstance(exc, tutor.TutorError) and exc.refused
-        code = exc.code if isinstance(exc, tutor.TutorError) else "failed"
+    except (tutor.TutorError, practice.PracticeError, CatalogError, db.sqlite3.Error, OSError) as exc:
+        refused = isinstance(exc, practice.PracticeError) or (isinstance(exc, tutor.TutorError) and exc.refused)
+        code = exc.code if isinstance(exc, (tutor.TutorError, practice.PracticeError)) else "failed"
         if as_json:
             print(json.dumps({"ok": False, "error": {"code": code, "message": str(exc)}}, indent=2))
         print(f"dailygrad: {exc}", file=sys.stderr)
@@ -473,6 +517,19 @@ def leetcode_command(config: Config, args: argparse.Namespace) -> int:
 
     print(json.dumps(result, indent=2, ensure_ascii=False) if as_json else leetcode_text(action, result))
     return 0
+
+
+def practice_command(config: Config, args: argparse.Namespace) -> tuple[str, dict]:
+    """One `dailygrad leetcode practice` action, as (its name, its result). Raises PracticeError if refused."""
+    action = args.practice_action or "show"
+    if action == "set":
+        changes = practice.parse_changes(args.sources, args.mode, args.interval, args.max_reviews)
+        return "practice set", tutor.set_practice(config, changes)
+    if action == "reset":
+        return "practice reset", tutor.reset_practice(config)
+    if action == "restart-coverage":
+        return "restart coverage", tutor.restart_coverage(config, args.confirm)
+    return "practice", tutor.practice_status(config)
 
 
 def read_answer() -> str:
@@ -502,19 +559,27 @@ def leetcode_text(action: str, result: dict) -> str:
             f"Hints are now {state}. The change applies from the next digest and the next reply; "
             "no problem was chosen and today's digest is not regenerated."
         )
+    if action == "practice":
+        return practice_text(result)
+    if action in ("practice set", "practice reset"):
+        return practice_change_text(action, result)
+    if action == "restart coverage":
+        return restart_coverage_text(result)
     if action == "complete":
         exercise = result["exercise"]
         name = f"{exercise['title'] or exercise['problem_id']} (exercise {exercise['exercise_id']})"
         if result["completion_pending"]:  # it was completed earlier, and another exercise is current by now
             return f"{name} was already complete. Nothing to change."
-        after = f"The next digest moves on to the {result['next_track']['name']} track; `dailygrad leetcode next` moves on now."
+        after = upcoming_text(result["upcoming"])
         if not result["changed"]:
             return f"{name} was already complete. {after}"
         return f"{name} marked complete. This is not a mark that you solved it in code. {after}"
     if action == "next":
         previous, active = result["previous"], result["active"]
         name = f"{previous['title'] or previous['problem_id']} (exercise {previous['exercise_id']})"
-        if not result["changed"]:
+        if not result["changed"] and active is None and result.get("upcoming"):
+            lines = [f"{name} stays {previous['outcome']}. Nothing was assigned."]
+        elif not result["changed"]:
             lines = [f"{name} had been moved on from already. Nothing to change."]
         elif previous["outcome"] == "skipped":
             lines = [f"{name} recorded as skipped: not completed, and not solved."]
@@ -532,6 +597,8 @@ def leetcode_text(action: str, result: dict) -> str:
                 "",
                 "The next digest shows it. No digest was written and today's is unchanged.",
             ]
+        elif result.get("upcoming"):
+            lines += ["", upcoming_text(result["upcoming"])]
         return "\n".join(lines)
     title = result["problem"]["title"]
     if action == "hint":
@@ -560,6 +627,93 @@ def leetcode_text(action: str, result: dict) -> str:
     return f"{title} marked {result['marked']}. {state_text(result['state'])}"
 
 
+def upcoming_text(upcoming: dict | None) -> str:
+    """What the next exercise will be, after one has ended."""
+    if upcoming is None:
+        return "The next digest brings the next exercise; `dailygrad leetcode next` moves on now."
+    if upcoming["state"] in ("exercise", "new_cycle"):
+        extra = " It begins a new loop cycle, freshly shuffled." if upcoming["state"] == "new_cycle" else ""
+        return f"The next digest brings the next exercise; `dailygrad leetcode next` moves on now.{extra}"
+    return f"{upcoming['message']} No exercise is waiting; `dailygrad leetcode practice` shows the settings."
+
+
+def practice_text(result: dict) -> str:
+    """`dailygrad leetcode practice` for a person. The JSON form carries the same facts."""
+    settings, origin = result["settings"], result["from"]
+    names = {source["id"]: source["name"] for source in result["available_sources"]}
+    where = lambda name: "" if origin[name] == "config" else "  (set here)"  # noqa: E731
+    lines = [
+        f"Sources:           {' + '.join(names[source] for source in settings['sources'])}{where('sources')}",
+        f"Pool:              {result['pool']['problems']} problems, each once however many lists hold it",
+        f"Mode:              {settings['mode']}{where('mode')}",
+        f"Review interval:   {settings['review_interval_days']} days{where('review_interval_days')} (learning mode)",
+        f"Maximum reviews:   {settings['max_reviews']}{where('max_reviews')} (learning mode)",
+    ]
+    if result["preferences_problem"]:
+        lines.append(f"  ({result['preferences_problem']}; the config file's settings are shown)")
+    rows = [("Source", "ID", "Problems", "Selected")]
+    for source in result["available_sources"]:
+        rows.append((source["name"], source["id"], str(source["problems"]), "yes" if source["selected"] else "no"))
+    widths = [max(len(row[column]) for row in rows) for column in range(3)]
+    lines += ["", *("  ".join([*(cell.ljust(width) for cell, width in zip(row, widths)), row[3]]) for row in rows), ""]
+
+    coverage, loop, learning = result["coverage"], result["loop"], result["learning"]
+    per_source = ", ".join(f"{part['name']} {part['encountered']}/{part['problems']}" for part in coverage["by_source"])
+    lines.append(f"Coverage:  pass {coverage['pass']}, {coverage['encountered']} of {coverage['pool']} assigned ({per_source})"
+                 + (" - complete" if coverage["complete"] else ""))  # fmt: skip
+    cycle = loop["cycle"]
+    if cycle:
+        stale = "" if cycle["matches_selection"] else " (other sources: the next loop exercise starts a new cycle)"
+        lines.append(f"Loop:      cycle {cycle['number']}, {cycle['assigned']} of {cycle['size']} assigned{stale}; "
+                     f"{loop['cycles_completed']} cycle{'' if loop['cycles_completed'] == 1 else 's'} completed")  # fmt: skip
+    else:
+        lines.append("Loop:      no cycle yet: the first loop exercise begins one")
+    next_review = learning["next_review_on"] or "none scheduled"
+    lines.append(f"Learning:  {learning['due_now']} due now, next review {next_review}; {learning['new_remaining']} never "
+                 f"completed, {learning['scheduled']} waiting for a review, {learning['reviews_complete']} with every review done")  # fmt: skip
+    active = result["active"]
+    lines.append("")
+    if active:
+        lines.append(f"Current exercise {active['exercise_id']}: {active['title'] or active['problem_id']}. It stays until you "
+                     "complete or skip it, whatever the settings.")  # fmt: skip
+    upcoming = result["upcoming"]
+    lines.append(f"Next: {upcoming['message'] or 'the next ' + settings['mode'] + ' exercise.'}")
+    lines.append(f"Settings file: {result['preferences_file']}")
+    return "\n".join(lines)
+
+
+def practice_change_text(action: str, result: dict) -> str:
+    settings = result["settings"]
+    summary = (f"{settings['mode']} practice from {' + '.join(settings['sources'])}; reviews every "
+               f"{settings['review_interval_days']} days, at most {settings['max_reviews']}")  # fmt: skip
+    if action == "practice reset":
+        head = "The settings made here were forgotten" if result["changed"] else "Nothing to reset"
+        return f"{head}. In force: {summary} (the config file's)."
+    if not result["changed"]:
+        return f"Nothing to change. In force: {summary}."
+    lines = [f"Saved. In force: {summary}."]
+    if result["replaced_damaged_file"]:
+        lines.append("The settings file could not be read and was replaced; settings not given here are the config file's.")
+    kept = f": exercise {result['active_exercise_id']} stays current until you complete or skip it" if result["active_exercise_id"] else ""
+    lines.append(f"It applies when the next exercise is chosen{kept}. No history was changed.")
+    return "\n".join(lines)
+
+
+def restart_coverage_text(result: dict) -> str:
+    coverage = result["coverage"]
+    if result["dry_run"]:
+        if not result["would_change"]:
+            return f"Coverage pass {coverage['pass']} has nothing in it yet, so a restart would change nothing."
+        return (f"Coverage pass {coverage['pass']}: {coverage['encountered']} of {coverage['pool']} assigned. A restart begins "
+                "pass {0}, in which each question may be assigned once more; every exercise, outcome and mark is kept.\n"
+                "Dry run: nothing was changed. To restart: dailygrad leetcode practice restart-coverage --confirm"
+                ).format(coverage["pass"] + 1)  # fmt: skip
+    if not result["changed"]:
+        return f"Coverage pass {coverage['pass']} has nothing in it yet. Nothing was changed."
+    return (f"Coverage pass {coverage['pass']} begun: {coverage['encountered']} of {coverage['pool']} assigned so far. "
+            "Every exercise, outcome and mark was kept.")  # fmt: skip
+
+
 def state_text(state: dict) -> str:
     times = state["times_shown"]
     parts = [
@@ -573,12 +727,12 @@ def state_text(state: dict) -> str:
 
 def leetcode_status_text(result: dict) -> str:
     names = {track["id"]: track["name"] for track in result["tracks"]}
-    progress, catalog = result["progress"], result["catalog"]
+    progress, catalog, settings = result["progress"], result["catalog"], result["practice"]["settings"]
     lines = [
         f"LeetCode exercises: {'on' if result['enabled'] else 'off'}",
         f"Hints in digests:   {'on' if result['hints_enabled'] else 'off'}",
-        f"Rotation:           {' -> '.join(names[track] for track in result['rotation'])}"
-        f" (next: {result['next_track']['name']})",
+        f"Practice:           {settings['mode']} from {' + '.join(names[track] for track in settings['sources'])}"
+        f" ({result['practice']['pool']['problems']} problems; `dailygrad leetcode practice` for more)",
         f"Catalog:            {catalog['problems']} problems, snapshot of {catalog['snapshot']}",
         "",
     ]
@@ -598,7 +752,7 @@ def leetcode_status_text(result: dict) -> str:
         lines += [
             f"Current exercise {current['exercise_id']} ({when}):",
             f"  {current['title']} ({current['difficulty']})  {current['url']}",
-            f"  {names[current['track']]} track{', review' if current['review'] else ''}. "
+            f"  From {names[current['track']]}{'; ' + render.practice_label(current['practice']) if current['practice'] else ''}. "
             f"{current['answers']} answer{'' if current['answers'] == 1 else 's'} sent, "
             f"{current['hints_given']} of {current['hints_total']} hints given.",
             f"  {state_text(current['state'])}",
@@ -609,7 +763,7 @@ def leetcode_status_text(result: dict) -> str:
         lines += ["No exercise has been shown yet. `dailygrad run` shows the first.", ""]
     rows = [("Track", "Listed by", "Problems", "Shown")]
     for track in result["tracks"]:
-        name = track["name"] if track["in_rotation"] else f"{track['name']} (not in the rotation)"
+        name = track["name"] if track["selected"] else f"{track['name']} (not selected)"
         rows.append((name, track["publisher"], str(track["problems"]), str(track["shown"])))
     widths = [max(len(row[column]) for row in rows) for column in range(3)]
     lines += ["  ".join([*(cell.ljust(width) for cell, width in zip(row, widths)), row[3]]) for row in rows]

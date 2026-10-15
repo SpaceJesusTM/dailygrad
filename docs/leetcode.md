@@ -9,7 +9,8 @@ exercise, as [`reference_solution`](output.md#reference-solution).
 The exercise is not a new one each day. It stays the current exercise, and every digest
 shows it again, until the person says they are finished with it or asks for the next one.
 
-This page covers the catalog and where it came from, how the current exercise is chosen and
+This page covers the catalog and where it came from, how the current exercise is chosen
+(the question sources and the three practice modes: coverage, loop and learning) and
 ended, the hint preference, the `dailygrad leetcode` commands with their JSON output, and
 what a program needs in order to relay answers on a person's behalf.
 
@@ -18,9 +19,9 @@ what a program needs in order to relay answers on a person's behalf.
 ```
  packaged catalog          deterministic choice          local model              digest
 ┌───────────────────┐    ┌────────────────────────┐    ┌──────────────────┐    ┌──────────────────────┐
-│ leetcode.toml     │    │ whose turn: rotation   │    │ words the hint   │    │ ## LeetCode          │
-│ 182 problems      │───▶│ next unseen in track   │───▶│ (checked, with a │───▶│    Micro-Lesson      │
-│ 3 sources         │    │ or a review            │    │ catalog fallback)│    │ "leetcode" in JSON   │
+│ leetcode.toml     │    │ selected sources: pool │    │ words the hint   │    │ ## LeetCode          │
+│ 182 problems      │───▶│ mode: coverage, loop   │───▶│ (checked, with a │───▶│    Micro-Lesson      │
+│ 3 sources         │    │ or learning            │    │ catalog fallback)│    │ "leetcode" in JSON   │
 └───────────────────┘    └────────────────────────┘    └──────────────────┘    └──────────────────────┘
 ```
 
@@ -143,44 +144,16 @@ A problem removed from the catalog stays in the history. It is simply never chos
 
 ## Which problem is the current exercise
 
-All of this is decided without the model, from the catalog, the rotation and the table of
-exercises already assigned.
+All of this is decided without the model, from the catalog, the practice settings and the
+history of exercises.
 
 **One exercise at a time.** A run shows, in this order: the exercise an earlier run showed
-that same day; else the current exercise, if it is still open; else a newly assigned one.
-An exercise is open until the person completes or skips it (see
+that same day; else the current exercise, if it is still open; else the one the practice
+mode chooses next. An exercise is open until the person completes or skips it (see
 [Ending an exercise](#ending-an-exercise)), so with nothing said the same exercise appears
-day after day, each time whole, and marked as carried over from its second day.
-
-**The rotation.** The tracks take turns, one exercise each, in the order of `rotation`:
-`neetcode-150`, `amd`, `vanguard`, and round again. The turn moves on when a new exercise is
-assigned, not with the calendar and not with a showing: an exercise shown for four days
-takes one turn, and a day on which DailyGrad did not run skips none.
-
-**Within a track.** A track shows its easy problems first, then its medium ones, then its
-hard ones. Within a difficulty it walks the topics in a fixed order: arrays and hashing,
-two pointers, sliding window, stack, binary search, linked lists, trees, tries, heaps,
-backtracking, graphs, advanced graphs, one- and two-dimensional dynamic programming,
-greedy, intervals, math and geometry, bit manipulation. So each pass revisits the topics in
-the same order at a higher level.
-
-**Overlap.** The next problem of a track is its first one that has not been shown on *any*
-track. Two Sum is on the NeetCode and AMD lists: whichever track reaches it first shows it,
-and the other passes over it.
-
-**Reviews.** When every problem of a track has been assigned, its turn is a review, not a
-skipped turn. The review is the track's problem assigned least often; among those, one you
-marked `needs-review` comes first, then unmarked ones, then `comfortable`, then solved; then
-the one assigned longest ago. The previous exercise's problem is not chosen again while
-there is another. The digest marks a review as such, and `review` is `true` in the JSON.
-Nothing is deleted from the history to make a problem available again. A review is a new
-exercise with its own ID: that the problem was completed, or solved in code, the first time
-does not finish it. And `review` is only ever about the problem having been assigned before.
-An exercise shown again because it is still open is a carry-over (`is_carryover`), not a
-review.
-
-With the default rotation the AMD track reaches its reviews after 17 of its exercises and
-Vanguard after 30 of its. How long that takes now depends on you.
+day after day, each time whole, and marked as carried over from its second day. Practice
+moves on when an exercise is completed or skipped, never because it was shown again, a hint
+was asked for, an answer was sent or time passed.
 
 **The same day.** A second run on the same calendar day shows the exercise the first one
 showed, with the same hint, and asks the model nothing more for it. That holds even if the
@@ -193,9 +166,174 @@ later showing makes no model request for it.
 
 **Failures.** The exercise is recorded in the same transaction as the run. If the output
 files cannot be written the run is rolled back: no exercise was assigned, no showing was
-recorded, and the rotation has not moved. If the exercise cannot be prepared at all (an
-unreadable catalog, say) the digest keeps its news and its lesson, says that there is no
-exercise, records none, and is degraded; the next run tries the same problem.
+recorded, and practice has not moved. If the exercise cannot be prepared at all (an
+unreadable catalog or practice settings file, say) the digest keeps its news and its lesson,
+says that there is no exercise, records none, and is degraded; the next run tries again.
+
+## Question sources and practice modes
+
+Two independent settings decide what the next exercise is: which **sources** it comes from,
+and the **mode**.
+
+### Sources: one pool
+
+The sources are the catalog's lists: `neetcode-150`, `amd` and `vanguard`
+(`dailygrad leetcode practice` lists them with their problem counts, which come from the
+catalog rather than being written down anywhere). Any non-empty combination can be
+selected. The selected sources make **one pool**: every problem any of them lists, once,
+however many of them list it. Two Sum is on the NeetCode 150 and AMD lists; with both
+selected it is one problem in the pool, assigned once.
+
+A problem keeps every list it is on: the digest credits all of them, and `status` counts it
+for each. The exercise's `track` is the selected source it was drawn from, the first in the
+catalog's order that lists it.
+
+The pool is ordered as the catalog introduces problems: easy, then medium, then hard, and
+within a difficulty the topics in a fixed order (arrays and hashing, two pointers, sliding
+window, stack, binary search, linked lists, trees, tries, heaps, backtracking, graphs,
+advanced graphs, one- and two-dimensional dynamic programming, greedy, intervals, math and
+geometry, bit manipulation); within a topic, the order of the catalog file. Coverage and
+learning follow that order; loop shuffles it.
+
+### Coverage
+
+Every problem of the pool once, in the pool's order, for breadth.
+
+- The next exercise is the pool's first problem not yet assigned **in the current pass**.
+  Every exercise since the pass began counts, whatever mode chose it, and a skipped one
+  counts as encountered.
+- When every problem has been assigned, coverage is complete: the digest says so ("AMD
+  coverage complete.") and nothing is assigned. It never starts repeating on its own. The
+  digest is not degraded by this.
+- `dailygrad leetcode practice restart-coverage --confirm` begins a fresh pass, in which
+  every problem may be assigned once more. It adds a marker row and changes nothing else:
+  every exercise, outcome and mark stays. An exercise open at that moment counts as the new
+  pass's first, so the pass does not offer it again. Without `--confirm` it only reports.
+- **History from before practice modes is the first pass.** Problems the earlier track
+  rotation assigned are not offered again, and coverage carries on with the ones not seen.
+
+### Loop
+
+Every problem of the pool once per cycle, again and again, for repetition.
+
+- A cycle holds the whole combined pool: with AMD and Vanguard selected, one cycle is every
+  problem of either list once (the union, overlaps removed), never a loop per source.
+- The cycle's order is shuffled when it begins and stored in the database
+  (`leetcode_cycles`). A restart, an upgrade or a failed run continues the same cycle at the
+  same place; nothing reshuffles or resets it.
+- No problem comes twice in a cycle. Completing or skipping the current exercise moves the
+  cycle on; showing it again does not. A skipped problem is not given again in that cycle.
+- When every problem of the cycle has been assigned, the next exercise begins a new cycle,
+  shuffled afresh. Where the pool has more than one problem, it does not begin with the
+  problem that ended the last one.
+- **Changing the sources mid-cycle** keeps the current exercise. When the next exercise is
+  chosen, the unfinished cycle is ended (`sources_changed`) and a fresh cycle begins on the
+  new pool. The old cycle's exercises stay in the history.
+- Switching to another mode and back resumes an unfinished cycle if the sources are the
+  same. Cycle numbers count on from the first cycle ever.
+- Looping never ends by itself: it goes on until the mode or the sources are changed.
+
+### Learning
+
+Reviews of completed problems at a fixed interval, for retention.
+
+| Setting | Meaning |
+|---|---|
+| `review_interval_days` | Days from a completion to the next review. 1 to 365. |
+| `max_reviews` | Reviews after the problem's first completion: 1 to 1000, or `"unlimited"`. |
+
+- A problem enters the schedule when it is **completed** for the first time, in any mode,
+  including before practice modes existed. Being shown, answered or skipped does not count.
+- Its next review falls due `review_interval_days` after its **latest completion**, as a
+  calendar day. A review completed late moves the next one: with a 7-day interval, a problem
+  completed on October 15 is due on October 22; if that review is completed on October 24,
+  the next is due on October 31.
+- Only completed **learning reviews** count toward `max_reviews`. With `max_reviews = 2`, a
+  problem first completed on October 15 is reviewed from October 22 and again a week after
+  that review was completed, and then never automatically again. Repeats from loop mode are
+  practice, not reviews, though they do move the due date.
+- **Order:** due reviews first, the one that fell due earliest first, then the pool's order.
+  With no review due, a problem never completed, in the pool's order: those never offered
+  before come ahead of those offered and not completed.
+- **Never early:** a problem is not given before its due date.
+- **Skipping** (`next`) is not a completed review and uses up nothing of `max_reviews`. The
+  skipped problem is set aside for one interval from the day it was skipped, so `next` can
+  never bring it straight back; after that it is due again (a review keeps its number). A
+  problem never completed that is skipped is set aside the same way.
+- **Waiting:** with nothing due and nothing new, nothing is assigned and the digest says
+  when the next review falls due ("No reviews due. Next review: October 22."). When every
+  problem has had all its reviews and none is new, it says so. Neither makes the digest
+  degraded.
+- The intervals are fixed. There is no adaptive spacing and no judgement of how well an
+  answer went: the schedule depends only on completions, skips and the two settings.
+
+### Calendar days
+
+Due dates are calendar days in the local time zone of the machine DailyGrad runs on: the
+zone that dates the digest itself (on the production host, America/Toronto). A completion at
+23:30 on October 15 in Toronto is on October 15, whatever the UTC date.
+
+### Settings: where they live
+
+| Where | What | Changed by |
+|---|---|---|
+| `[leetcode]` in the config file | The defaults: `sources`, `mode`, `review_interval_days`, `max_reviews` | editing the file |
+| `<data_dir>/leetcode_practice.json` | What `practice set` chose; each setting there overrides the config file's | `dailygrad leetcode practice set` and `reset` |
+| the database | Passes, cycles, why each exercise was chosen | runs and `next`, `restart-coverage` |
+
+The settings file is runtime data, like the hint preference: Git ignores `data/`, and an
+update or a redeploy leaves it alone. It is replaced atomically, under a lock, so two changes
+at once cannot lose each other's setting. A change never ends or replaces the current
+exercise: it applies when the next one is chosen, by a run or by `next`. A run that is at
+work while the settings change chooses again when it records, so the change still applies to
+what it shows (with the catalog's hint, if the problem changed).
+
+If the settings file exists but cannot be understood, nothing is guessed: no new exercise is
+assigned (the current one is still shown), `next` is refused, and `status` and `practice`
+report the problem. `practice set` replaces such a file with what it is given, and
+`practice reset` removes it.
+
+### What changed from the track rotation
+
+Before practice modes, the tracks took turns (`rotation`), one exercise each, and a track that
+had shown all its problems gave an untimed **review** on its turn: the problem it had shown
+least often, which could come back the next day. That is gone:
+
+- The sources are one pool, so there are no turns: with all three selected, coverage goes
+  through the combined list in order rather than alternating between lists. `next_track` in
+  `status` and `mark complete` is now always `null`; `upcoming` says what comes next.
+- Coverage, the default, stops at the end of the pool instead of reviewing. For repetition,
+  choose `loop`; for spaced reviews, `learning`.
+- `rotation` in a config file still loads: when `sources` is not set, its tracks (each once)
+  are the sources. With both, `sources` wins.
+- Nothing in the history is changed. The exercise open when DailyGrad is updated stays the
+  current exercise, and coverage carries on from the problems already assigned.
+
+### Upgrading an installation
+
+The change is additive and needs no manual migration:
+
+1. Update the code (`git pull`, then `pip install -e .` in the virtual environment if the
+   package was installed that way; there are no new dependencies).
+2. Check the configuration is still accepted: `dailygrad config` prints the LeetCode line with
+   the mode and sources (`coverage practice from neetcode-150 + amd + vanguard` by default).
+   A config file with `rotation = [...]` keeps working.
+3. Read the state without changing anything: `dailygrad leetcode practice`. It opens the
+   database read-only, so an existing database is shown as it is: its exercises are the first
+   coverage pass, and the exercise in progress is listed under "Current exercise".
+4. Choose the practice, if not the default: for example
+   `dailygrad leetcode practice set --sources amd --mode learning --interval 7 --max-reviews 3`.
+5. The next run, `next`, `mark complete` or `practice restart-coverage` opens the database
+   for writing; it then gains the three tables `leetcode_schedule`, `leetcode_cycles` and
+   `leetcode_coverage_passes`. No existing table or row changes, so a copy of the database
+   taken before the upgrade is still valid, and an older DailyGrad can still open the
+   upgraded database (it ignores the new tables and the settings file; it would choose by the
+   old rotation again). To roll back, first remove `sources`, `mode`, `review_interval_days`
+   and `max_reviews` from the config file if you added them there: an older version refuses
+   settings it does not know. Settings made with `practice set` need no such step.
+
+Back up the data directory first if you like (`cp -a data data.before-practice`); nothing in
+the upgrade deletes or rewrites history, so the backup is a precaution, not a step.
 
 ## Ending an exercise
 
@@ -215,13 +353,15 @@ all leave the exercise open. `solved` is a statement about the problem (you solv
 code); `completed` is a statement about the exercise (you are done with it). Neither sets
 the other, and a skipped exercise counts as neither completed, attempted nor solved.
 
-**After `mark complete`** there is no current exercise until the next run assigns one, from
-the next track. A run later the same day still shows the completed exercise, because it is
-that day's.
+**After `mark complete`** there is no current exercise until the next run assigns one, as
+the practice mode decides. A run later the same day still shows the completed exercise,
+because it is that day's. When the mode has nothing to give (coverage complete, no review
+due), the reply's `upcoming` says so, and so does the next digest.
 
 **After `next`** the new exercise is current immediately. It has not been in a digest: the
 next scheduled run shows it and words its hint. Today's digest, and anything posted from
-it, is left as it is.
+it, is left as it is. When the mode has nothing to give, the exercise is still ended, no new
+one is assigned (`active` is `null`) and `upcoming` says why.
 
 **Naming the exercise.** Both commands take `--exercise ID`, the `exercise_id` that `status`
 and a digest's JSON give, and act only if that is still the current exercise. That makes a
@@ -241,7 +381,8 @@ terminal means. A program should always pass it.
 picked its exercise keeps it for that digest, and what the command did still stands: a
 completion made while the run was working is in that digest's `awaiting_completion`, and an
 exercise that `next` assigned meanwhile is the one the run records, so one request never
-uses two turns of the rotation.
+moves practice on twice. The same goes for `practice set`: a run chooses its exercise again
+when it records it, so settings changed while it was working still apply.
 
 ## Hints
 
@@ -263,7 +404,7 @@ Hints are **on** until switched off. The choice lives in
 
 - It is runtime data. Git ignores `data/`, and a code update does not touch it.
 - A change applies from the next digest and the next reply. It never chooses a problem,
-  moves the rotation, runs DailyGrad or rewrites a digest that exists.
+  moves practice on, runs DailyGrad or rewrites a digest that exists.
 - A run only reads the file. If it exists but cannot be understood, the run goes ahead and
   shows **no** hint: a hint shown by mistake cannot be taken back, while a missing one is
   one command away. `dailygrad leetcode status` reports the problem, and
@@ -311,24 +452,34 @@ Feedback never marks a problem as solved or an exercise as completed, however go
 answer. `mark clear` withdraws the confidence and the solved mark; the showings, the
 exchanges and the outcome of an exercise are history and stay.
 
-The database holds five LeetCode tables. None of DailyGrad's earlier tables changed, and a
+The database holds eight LeetCode tables. None of DailyGrad's earlier tables changed, and a
 database from an earlier version gains the missing ones the first time it is opened for
-writing.
+writing; opening it again changes nothing.
 
-- `leetcode_assignments`: one row per exercise assigned, with its track, whether it was a
-  review, and the hint written for it. The newest row is the current exercise while it has
-  no outcome. The rotation and every track's position are derived from this table alone, so
-  showing an exercise again moves neither.
+- `leetcode_assignments`: one row per exercise assigned, with the source it was drawn from
+  (`track`), whether its problem had been assigned before (`review`), and the hint written
+  for it. The newest row is the current exercise while it has no outcome. Showing an
+  exercise again adds no row, so it moves nothing on.
 - `leetcode_showings`: one row per run whose digest showed an exercise. It is what makes a
   rerun show the day's exercise again, and where `day` and `assigned_on` come from.
 - `leetcode_outcomes`: at most one row per exercise, `completed` or `skipped`, with the
   time. Its primary key is the exercise, so an exercise cannot be ended twice.
 - `leetcode_turns`: one row per further hint, answer or review, with what was returned.
 - `leetcode_progress`: one row per problem you have attempted or marked.
+- `leetcode_schedule`: why each exercise was chosen: the mode, the selected sources, whether
+  it was a first encounter, a repeat or a learning review (with its number and due day), and
+  its loop cycle. Exercises from before practice modes have none.
+- `leetcode_cycles`: one row per loop cycle, with its sources, its shuffled order, and how
+  it ended (`completed` or `sources_changed`); the open cycle has no end.
+- `leetcode_coverage_passes`: one row per fresh coverage pass started on request. Without
+  one, every exercise is in the first pass.
+
+Coverage, loop progress and the learning schedule are all derived from these tables and the
+outcomes: nothing is counted twice, and nothing is deleted to make a problem available again.
 
 **A database from before exercises were kept.** That version assigned a new exercise every
 day, so its `leetcode_assignments` has one row per day. Nothing in it is rewritten. Each row
-still counts as one exercise, so the rotation continues from exactly where it was; each
+still counts as one exercise, so coverage carries on from exactly where it was; each
 gets the one showing its row names, added to `leetcode_showings` the first time the database
 is opened for writing; and the marks in `leetcode_progress` are untouched. Its newest
 exercise becomes the current one and is carried over until you end it. The older ones have
@@ -339,7 +490,7 @@ no outcome: they were neither completed nor skipped, and are not counted as eith
 
 | Command | Does | Uses the model |
 |---|---|---|
-| `dailygrad leetcode` or `leetcode status` | The current exercise, the rotation and your progress. Reads only: creates no file. | No |
+| `dailygrad leetcode` or `leetcode status` | The current exercise, the practice settings and your progress. Reads only: creates no file. | No |
 | `leetcode hints on` / `off` | Whether digests show a hint. | No |
 | `leetcode hint` | The next hint for the exercise, one step firmer than the last. | No |
 | `leetcode answer` | Feedback on an approach read from standard input. | Yes, once |
@@ -347,11 +498,16 @@ no outcome: they were neither completed nor skipped, and are not counted as eith
 | `leetcode mark STATE` | Records `attempted`, `needs-review`, `comfortable`, `solved` or `clear` for the problem. | No |
 | `leetcode mark complete` | Ends the current exercise as completed. The next run assigns the next. | No |
 | `leetcode next` | Ends the current exercise as skipped (unless completed) and assigns the next at once. | No |
+| `leetcode practice` | The sources to choose from, the settings and where each comes from, and progress in every mode. Reads only. | No |
+| `leetcode practice set` | Changes any of `--sources ID...`, `--mode MODE`, `--interval DAYS`, `--max-reviews N\|unlimited`, at once or not at all. | No |
+| `leetcode practice reset` | Forgets the settings `practice set` stored: the config file's apply again. | No |
+| `leetcode practice restart-coverage` | Says what a fresh coverage pass would do; with `--confirm`, begins one. | No |
 
 Every command accepts `--json` and `--config PATH`. `hint`, `answer`, `review` and `mark`
 are about the newest exercise assigned, or with `--problem ID` about the newest exercise of
 that problem. `mark complete` and `next` also take `--exercise ID`. No command writes a
-digest or starts a run, and only `next` chooses a problem or moves the rotation.
+digest or starts a run, and only `next` chooses a problem. No command ends or replaces the
+current exercise but `mark complete` and `next`, and none deletes or rewrites history.
 
 ### Exit codes and errors
 
@@ -378,6 +534,13 @@ standard output; the message also goes to standard error.
 | `bad_answer` | 2 | Standard input was not UTF-8 text. |
 | `unknown_state` | 2 | `mark` was given a state it does not know. |
 | `invalid_config` | 2 | The configuration file is invalid. |
+| `unknown_source` | 2 | `practice set --sources` names something that is not a source (or `all`). |
+| `no_sources` | 2 | `practice set --sources` would select none. |
+| `unknown_mode` | 2 | `--mode` is not `coverage`, `loop` or `learning`. |
+| `bad_interval` | 2 | `--interval` is not a whole number of days from 1 to 365. |
+| `bad_max_reviews` | 2 | `--max-reviews` is not a whole number from 1 to 1000 or `unlimited`. |
+| `nothing_to_change` | 2 | `practice set` was given no setting. |
+| `invalid_preferences` | 2 | `next` was asked for while the practice settings file cannot be used. `practice set` or `reset` replaces it. |
 | `model_unavailable` | 1 | Ollama could not be reached, or its reply was unusable. Nothing was recorded: send the answer again. |
 | `failed` | 1 | The catalog, the database or a file could not be used. |
 
@@ -390,8 +553,8 @@ standard output; the message also goes to standard error.
   "hints_enabled": true,
   "preferences_file": "/home/you/dailygrad/data/leetcode_preferences.json",
   "preferences_problem": null,
-  "rotation": ["neetcode-150", "amd", "vanguard"],
-  "next_track": {"id": "amd", "name": "AMD"},
+  "practice": {"settings": {"sources": ["neetcode-150", "amd", "vanguard"], "mode": "coverage", "…": "…"}, "…": "as `practice --json`, without `ok`, `enabled` and `active`"},
+  "next_track": null,
   "active_exercise_id": 1,
   "completion_pending": true,
   "current": {
@@ -409,13 +572,14 @@ standard output; the message also goes to standard error.
     "hints_given": 1,
     "hints_total": 2,
     "answers": 0,
-    "state": {"times_shown": 1, "attempted": false, "confidence": null, "solved_in_code": false}
+    "state": {"times_shown": 1, "attempted": false, "confidence": null, "solved_in_code": false},
+    "practice": {"mode": "coverage", "sources": ["neetcode-150", "amd", "vanguard"], "encounter": "first", "cycle": null, "review": null}
   },
   "tracks": [
     {
       "id": "neetcode-150", "name": "NeetCode 150", "kind": "curriculum", "publisher": "NeetCode",
       "url": "https://github.com/richard7ao/neetcode-150", "retrieved": "2026-10-09",
-      "problems": 150, "shown": 1, "in_rotation": true
+      "problems": 150, "shown": 1, "selected": true
     }
   ],
   "progress": {
@@ -439,10 +603,14 @@ standard output; the message also goes to standard error.
   as `assigned_on`) the first of them. `is_today` says whether today's digest shows it. An
   exercise that `next` assigned and no digest has shown yet has `date` `null`, `day` 0 and
   `is_today` `false`.
-- `next_track` is the track the exercise after the current one will come from.
-- `tracks[].shown` counts that list's problems assigned on any track. `progress.exercises`
-  counts exercises, which exceeds `progress.shown` once reviews begin; `completed` and
-  `skipped` count how those ended, and an open or older exercise is in neither.
+- `practice` is what [`practice --json`](#practice---json) gives: the settings, the sources,
+  progress in each mode and `upcoming`, what comes after the current exercise.
+- `next_track` is always `null`. It named the track whose turn came next, when tracks took
+  turns; there are no turns now. It is kept so that a program reading it does not break.
+- `tracks[].shown` counts that list's problems assigned, whichever source they were drawn
+  from, and `selected` says whether the source is in the pool. `progress.exercises` counts
+  exercises, which exceeds `progress.shown` once problems repeat; `completed` and `skipped`
+  count how those ended, and an open or older exercise is in neither.
 - `preferences_problem` is a sentence if the preferences file exists but cannot be used,
   and `hints_enabled` is then `false`.
 - Nothing in it comes from the hidden half of the catalog.
@@ -598,7 +766,8 @@ dailygrad leetcode mark complete --exercise 1 --json
     "closed_at": "2026-10-09T17:44:42+00:00"
   },
   "completion_pending": false,
-  "next_track": {"id": "amd", "name": "AMD"}
+  "next_track": null,
+  "upcoming": {"state": "exercise", "message": null, "next_review_on": null}
 }
 ```
 
@@ -606,9 +775,12 @@ dailygrad leetcode mark complete --exercise 1 --json
   its answer is in the reply.
 - `changed` is `false` if it was completed already; `closed_at` is then the first time.
 - `completion_pending` is `false` when no exercise is open, which is the usual state after a
-  completion, and `next_track` is then the track the next run assigns from. If the
+  completion, and `upcoming` then says what the next run brings: `"exercise"`, `"new_cycle"`
+  (the next loop cycle begins), or, with a `message`, `"coverage_complete"`, `"caught_up"`
+  (no review due; `next_review_on` is when one is) or `"learning_complete"`. If the
   completed exercise has since been followed by another (a repeat that arrives late),
-  `completion_pending` is `true` and `next_track` is `null`: nothing is to be announced.
+  `completion_pending` is `true` and `upcoming` is `null`: nothing is to be announced.
+- `next_track` is always `null` (see [`status`](#status---json)).
 - No problem is chosen, no digest or archive is touched, and the model is not used.
 
 ### `next --json`
@@ -637,8 +809,10 @@ dailygrad leetcode next --exercise 1 --json
     "assigned_on": null,
     "day": 0,
     "is_carryover": false,
-    "awaiting_completion": true
-  }
+    "awaiting_completion": true,
+    "practice": {"mode": "coverage", "sources": ["neetcode-150", "amd", "vanguard"], "encounter": "first", "cycle": null, "review": null}
+  },
+  "upcoming": null
 }
 ```
 
@@ -649,7 +823,164 @@ dailygrad leetcode next --exercise 1 --json
   (`hint` is `null` until a run words one).
 - `changed` is `false` for a repeat of a request already carried out. `active` is then the
   exercise that request assigned, if it is still open, and nothing was skipped again.
+- When the practice mode has nothing to give (coverage complete, no review due), the
+  exercise is still ended, `active` is `null`, and `upcoming` says why, as for `mark
+  complete`. `changed` is then `false` if the exercise had already been completed, since
+  nothing was skipped or assigned.
 - The two writes, closing one exercise and assigning the next, are one transaction.
+
+### `practice --json`
+
+```sh
+dailygrad leetcode practice --json
+```
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "settings": {"sources": ["neetcode-150", "amd"], "mode": "learning", "review_interval_days": 7, "max_reviews": 3},
+  "from": {"sources": "preferences", "mode": "preferences", "review_interval_days": "config", "max_reviews": "config"},
+  "modes": ["coverage", "loop", "learning"],
+  "available_sources": [
+    {"id": "neetcode-150", "name": "NeetCode 150", "kind": "curriculum", "publisher": "NeetCode", "problems": 150, "selected": true},
+    {"id": "amd", "name": "AMD", "kind": "company", "publisher": "Interview Solver", "problems": 17, "selected": true},
+    {"id": "vanguard", "name": "Vanguard", "kind": "company", "publisher": "Interview Solver", "problems": 32, "selected": false}
+  ],
+  "pool": {"problems": 158, "sources": ["neetcode-150", "amd"]},
+  "active_exercise_id": 10,
+  "coverage": {
+    "pass": 1, "pass_started_at": null, "pool": 158, "encountered": 7, "remaining": 151, "complete": false,
+    "by_source": [
+      {"id": "neetcode-150", "name": "NeetCode 150", "problems": 150, "encountered": 5},
+      {"id": "amd", "name": "AMD", "problems": 17, "encountered": 3}
+    ]
+  },
+  "loop": {"cycle": null, "cycles_completed": 0},
+  "learning": {
+    "due_now": 1, "new_remaining": 151, "scheduled": 6, "reviews_complete": 0, "next_review_on": "2026-10-25",
+    "review_interval_days": 7, "max_reviews": 3
+  },
+  "upcoming": {"state": "exercise", "message": null, "next_review_on": null},
+  "preferences_file": "/home/you/dailygrad/data/leetcode_practice.json",
+  "preferences_problem": null,
+  "active": {
+    "exercise_id": 10, "problem_id": "two-sum", "number": 1, "title": "Two Sum",
+    "url": "https://leetcode.com/problems/two-sum/", "track": "neetcode-150", "review": true,
+    "assigned_on": "2026-10-24", "days_shown": 1, "outcome": null, "closed_at": null,
+    "practice": {
+      "mode": "learning", "sources": ["neetcode-150", "amd"], "encounter": "review", "cycle": null,
+      "review": {"number": 1, "limit": 3, "due_on": "2026-10-24"}
+    }
+  }
+}
+```
+
+It reads only: it creates no file and opens the database read-only, so it is safe to call at
+any time, including during a run.
+
+- `settings` are the ones in force; `from` says where each comes from: `"preferences"`
+  (stored by `practice set`) or `"config"` (the config file, or the built-in default).
+  `max_reviews` is a number or `"unlimited"`.
+- `available_sources` lists every source the catalog has, with its problem count, so a
+  caller never needs to know the IDs or counts in advance. `pool.problems` counts the
+  selected sources' problems once each.
+- `coverage`, `loop` and `learning` describe progress in every mode, whichever is in force,
+  so "how far through my loop am I?" can be answered at any time.
+  - `coverage`: the pass number, how many of the pool's problems it has assigned, overall
+    and per selected source (a problem two lists hold counts for both), and `complete`.
+  - `loop.cycle`: the open cycle, or `null` before the first: its `number`, `size`, how many
+    of its problems have been `assigned` (the current exercise included) and are
+    `remaining`, and `matches_selection` (`false` after the sources changed: the next loop
+    exercise begins a new cycle). `cycles_completed` counts finished cycles.
+  - `learning`: problems with a review `due_now` (the current exercise included, if it is
+    one), `new_remaining` (never completed), `scheduled` (waiting for a review), and
+    `reviews_complete` (every review done); `next_review_on` is the first future due day.
+- `upcoming` is what comes after the current exercise, or next if none is open, in the
+  mode in force: `state` is `"exercise"`, `"new_cycle"`, `"coverage_complete"`,
+  `"caught_up"` or `"learning_complete"`; `message` is the sentence the digest would show,
+  and `next_review_on` the day a review falls due when caught up.
+- `active` is the open exercise, by its identity only, with why it was chosen. Settings
+  changes never replace it.
+- `preferences_problem` is a sentence if the settings file cannot be used: the config file's
+  settings are then shown, and no new exercise will be assigned until it is replaced.
+
+The digest's `leetcode.practice` and `status`'s `current.practice` have the same shape as
+`active.practice`: `mode`, the `sources` selected when it was chosen, `encounter` (`"first"`
+if the problem had never been assigned before, `"repeat"`, or `"review"` for a learning
+review), `cycle` (`number`, `position` in it, `size`) in loop mode, and `review` (`number`,
+`limit`, `due_on`) for a review. It is `null` for an exercise from before practice modes.
+
+### `practice set --json`
+
+```sh
+dailygrad leetcode practice set --sources amd neetcode-150 --mode learning --interval 7 --max-reviews 3 --json
+```
+
+```json
+{
+  "ok": true,
+  "action": "set",
+  "changed": true,
+  "replaced_damaged_file": false,
+  "previous": {"sources": ["neetcode-150", "amd", "vanguard"], "mode": "coverage", "review_interval_days": 7, "max_reviews": 3},
+  "settings": {"sources": ["neetcode-150", "amd"], "mode": "learning", "review_interval_days": 7, "max_reviews": 3},
+  "from": {"sources": "preferences", "mode": "preferences", "review_interval_days": "preferences", "max_reviews": "preferences"},
+  "applies": "to the next exercise chosen; the current exercise stays until you complete or skip it",
+  "preferences_file": "/home/you/dailygrad/data/leetcode_practice.json",
+  "active_exercise_id": 10
+}
+```
+
+- Any of the four options may be given; the others stay as they are. Every value is checked
+  before anything is written, and one bad value refuses the whole request (exit 2) with one
+  of the codes above. `--sources all` selects every source; the order and repeats of the IDs
+  do not matter.
+- `changed` is `false` when the settings in force are the same as before.
+- `active_exercise_id` is the exercise in progress, which stays current.
+- `replaced_damaged_file` is `true` when the settings file could not be read: it was
+  replaced, and settings not given here are the config file's. `previous` is then `null`.
+
+### `practice reset --json`
+
+```json
+{
+  "ok": true, "action": "reset", "changed": true, "removed_file": true,
+  "settings": {"sources": ["neetcode-150", "amd", "vanguard"], "mode": "coverage", "review_interval_days": 7, "max_reviews": 3},
+  "from": {"sources": "config", "mode": "config", "review_interval_days": "config", "max_reviews": "config"},
+  "preferences_file": "/home/you/dailygrad/data/leetcode_practice.json",
+  "active_exercise_id": 10
+}
+```
+
+The settings file is removed; nothing else changes.
+
+### `practice restart-coverage --json`
+
+```sh
+dailygrad leetcode practice restart-coverage --json            # what a restart would do
+dailygrad leetcode practice restart-coverage --confirm --json  # do it
+```
+
+```json
+{
+  "ok": true,
+  "action": "restart_coverage",
+  "dry_run": false,
+  "changed": true,
+  "would_change": false,
+  "coverage": {"pass": 2, "pass_started_at": "2026-11-02T13:00:00+00:00", "pool": 17, "encountered": 0, "remaining": 17, "complete": false, "by_source": ["…"]},
+  "active_exercise_id": null,
+  "history_kept": true
+}
+```
+
+- Without `--confirm` nothing is opened for writing: `dry_run` is `true`, `changed` is
+  `false`, `coverage` is the current pass, and `would_change` says whether a restart would
+  begin a new pass (it would not while the current one has nothing in it yet).
+- With `--confirm`, `coverage` is the new pass. Only a row in `leetcode_coverage_passes` is
+  added: every exercise, outcome, mark, cycle and setting stays. A restart affects coverage
+  alone; loop and learning do not use passes.
 
 ## The model's memory
 
@@ -680,14 +1011,21 @@ of that logic, only these calls:
 | Record a mark | `dailygrad leetcode mark STATE --json` | none |
 | Finish the exercise | `dailygrad leetcode mark complete --exercise ID --json` | none |
 | Move on to the next now | `dailygrad leetcode next --exercise ID --json` | none |
+| Read the sources, mode and progress | `dailygrad leetcode practice --json` | none |
+| Change the sources or mode | `dailygrad leetcode practice set --mode M --interval N --max-reviews N --sources ID... --json` (any of them) | none |
+| Begin a fresh coverage pass | `dailygrad leetcode practice restart-coverage --confirm --json` | none |
 
 Rules that keep this safe:
 
 - **Run a fixed argument list, without a shell.** Every argument above is a literal. The
   only free text, the answer, goes to standard input as UTF-8 and is never placed on a
   command line. `--problem` takes a catalog ID, which matches `[a-z0-9]+(-[a-z0-9]+)*`,
-  `--exercise` a number of 1 to 9 digits, and `STATE` is one of six words; DailyGrad
-  refuses anything else.
+  `--exercise` a number of 1 to 9 digits, and `STATE` is one of six words; `--sources` takes
+  source IDs of the same form (or `all`), `--mode` one of three words, `--interval` and
+  `--max-reviews` whole numbers (or `unlimited`). DailyGrad refuses anything else.
+- **Change the practice settings only on the person's word**, and never in order to end or
+  replace the exercise in progress: a change applies to the next exercise chosen. Report
+  `settings` from the reply, not what was asked for.
 - **End an exercise only on the person's word.** Run `mark complete` when they say they are
   finished, and `next` when they ask to move on or skip. Never because an answer was right,
   and never refuse because it was not: they need no reason. Always pass `--exercise` with
@@ -720,7 +1058,10 @@ do: drop `leetcode.reference_solution` first.
 ```toml
 [leetcode]
 enabled = true
-rotation = ["neetcode-150", "amd", "vanguard"]
+sources = ["neetcode-150", "amd", "vanguard"]
+mode = "coverage"
+review_interval_days = 7
+max_reviews = 3
 model_hints = true
 feedback_budget_seconds = 120
 keep_alive_seconds = 300
@@ -728,11 +1069,19 @@ keep_alive_seconds = 300
 
 | Setting | Meaning |
 |---|---|
-| `enabled` | `false` leaves the exercise out: the digest has no section and `leetcode` is `null`. Nothing is recorded, so the rotation resumes where it was when it is switched on again. |
-| `rotation` | The tracks that take turns, in order. A track may be left out or listed more than once: `["neetcode-150", "neetcode-150", "amd"]` gives NeetCode two exercises in three. An unknown track is a configuration error (exit code 2). |
+| `enabled` | `false` leaves the exercise out: the digest has no section and `leetcode` and `leetcode_practice` are `null`. Nothing is recorded, so practice resumes where it was when it is switched on again. |
+| `sources` | The sources practised from, together, as one pool. One or more of `neetcode-150`, `amd`, `vanguard`; repeats are ignored. A default: `practice set --sources` overrides it. |
+| `mode` | `coverage`, `loop` or `learning` (see [Question sources and practice modes](#question-sources-and-practice-modes)). A default, like `sources`. |
+| `review_interval_days` | Learning mode: days from a completion to the next review, 1 to 365. A default. |
+| `max_reviews` | Learning mode: reviews after the first completion, 1 to 1000, or `"unlimited"`. A default. |
+| `rotation` | Deprecated: from before practice modes, when tracks took turns. If `sources` is not set, its tracks (each once) are the sources; with `sources` set it is ignored. An unknown track is still a configuration error. |
 | `model_hints` | `false` prints the catalog's hint as written and asks the model nothing. |
 | `feedback_budget_seconds` | The time allowed for the model request of one `answer` or `review`. |
 | `keep_alive_seconds` | How long the model stays loaded after such a reply. |
 
+An invalid value of any of them is a configuration error (exit code 2), and nothing runs.
+
 Whether a digest shows a hint is not a configuration setting, because it is meant to be
-changed from day to day: use `dailygrad leetcode hints`.
+changed from day to day: use `dailygrad leetcode hints`. The practice settings may be set in
+both places: the config file holds the defaults, and `dailygrad leetcode practice set` the
+choices made since, which win until `practice reset`.

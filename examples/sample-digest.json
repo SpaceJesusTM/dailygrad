@@ -171,6 +171,22 @@
     "hints_enabled": true,
     "hint": "What should you track about the values you've seen so far?",
     "hint_source": "model",
+    "exercise_id": 1,
+    "assigned_on": "2026-10-09",
+    "day": 1,
+    "is_carryover": false,
+    "awaiting_completion": true,
+    "practice": {
+      "mode": "coverage",
+      "sources": [
+        "neetcode-150",
+        "amd",
+        "vanguard"
+      ],
+      "encounter": "first",
+      "cycle": null,
+      "review": null
+    },
     "reference_solution": {
       "source": "catalog",
       "complete": true,
@@ -184,6 +200,26 @@
         "negative values"
       ]
     }
+  },
+  "leetcode_practice": {
+    "mode": "coverage",
+    "sources": [
+      {
+        "id": "neetcode-150",
+        "name": "NeetCode 150"
+      },
+      {
+        "id": "amd",
+        "name": "AMD"
+      },
+      {
+        "id": "vanguard",
+        "name": "Vanguard"
+      }
+    ],
+    "state": "exercise",
+    "message": null,
+    "next_review_on": null
   },
   "repair": null
 }

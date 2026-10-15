@@ -352,7 +352,8 @@ A complete real example is in [`examples/sample-digest.json`](../examples/sample
 | `sources` | array | Every available news source and whether this run fetched it. See below. Digests written before this key was added do not have it. |
 | `lesson` | object or `null` | The micro-lesson. `null` if lesson generation failed. |
 | `recall` | object or `null` | The recall question shown with the lesson. `null` on days without one, and when `lesson` is `null`. |
-| `leetcode` | object or `null` | The day's LeetCode exercise. See below. `null` when exercises are switched off in the config file, and when one could not be prepared (the run is then degraded). Digests written before this key was added do not have it. |
+| `leetcode` | object or `null` | The day's LeetCode exercise. See below. `null` when exercises are switched off in the config file, when one could not be prepared (the run is then degraded), and when the practice mode had none to give (`leetcode_practice` then says why; the run is not degraded). Digests written before this key was added do not have it. |
+| `leetcode_practice` | object or `null` | The LeetCode practice settings in force, and why there is no exercise when there is none to give. See [LeetCode practice](#leetcode-practice). `null` when exercises are switched off or could not be prepared. Digests written before this key was added do not have it. |
 | `repair` | object or `null` | `null` in a run's own digest; in a repaired revision of it, what was repaired. See [Repaired revisions](#repaired-revisions). Added without changing `schema_version`; digests written before it do not have it. |
 
 ### Run ID
@@ -439,8 +440,8 @@ contains it. The firmer hints and the catalog's spoiler words are in neither: se
 | `url` | string | Link to the problem on LeetCode. |
 | `difficulty` | string | `"easy"`, `"medium"` or `"hard"`, as LeetCode rates it. |
 | `premium` | boolean | `true` if LeetCode shows the full problem only to subscribers. The digest is complete either way. |
-| `track` | string | The track whose turn it was: `"neetcode-150"`, `"amd"` or `"vanguard"`. Always one of the IDs in `sources`. |
-| `review` | boolean | `true` if the problem had been assigned before, as an earlier exercise: the track had nothing new left. It says nothing about this exercise being shown again: see `is_carryover`. |
+| `track` | string | The selected source the problem was drawn from: the first in the catalog's order that lists it (before practice modes: the track whose turn it was). Always one of the IDs in `sources`. |
+| `review` | boolean | `true` if the problem had been assigned before, as an earlier exercise: a repeat in loop mode or a later coverage pass, or a learning review (`practice.encounter` tells them apart). It says nothing about this exercise being shown again: see `is_carryover`. |
 | `sources` | array | Every list that holds the problem, each with `id`, `name`, `kind` (`"curriculum"` or `"company"`) and `publisher`. |
 | `company_tags` | array of strings | The names of the `"company"` sources. These are a third party's tags, published by the source's `publisher`; they are not LeetCode's own company tags. |
 | `statement` | string | A short summary of the task, written for DailyGrad. |
@@ -455,6 +456,7 @@ contains it. The firmer hints and the catalog's spoiler words are in neither: se
 | `day` | integer | How many days a digest has shown the exercise, this one included: 1 in the first. Days without a run are not counted. |
 | `is_carryover` | boolean | `true` if an earlier day's digest showed the same exercise (`day` is 2 or more). `false` for a newly assigned one. |
 | `awaiting_completion` | boolean | `true` while the user has neither completed nor skipped the exercise. `false` only in a rerun on the day it was ended: that day's digest still shows it, and the next day's has a new one. |
+| `practice` | object or `null` | Why this exercise was chosen: `mode` (`"coverage"`, `"loop"` or `"learning"`), the `sources` selected then, `encounter` (`"first"` if the problem had never been assigned, `"repeat"`, or `"review"` for a learning review), `cycle` (`number`, `position`, `size`; loop mode only, else `null`) and `review` (`number`, `limit` as a number or `"unlimited"`, `due_on`; learning reviews only, else `null`). `null` for an exercise assigned before practice modes. |
 | `reference_solution` | object or `null` | The catalog's reference answer. See below. `null` if the catalog has none for the problem. Digests written before this key was added do not have it. |
 
 `leetcode` was added to schema version 1 as a new key, the last in the document. Nothing
@@ -468,6 +470,10 @@ later day until the user ends the exercise. Switching hints off or on changes
 `exercise_id` on were added without changing `schema_version`; digests written before they
 existed do not have them, and are to be read as a new exercise each (`is_carryover` false).
 
+`practice` was added without changing `schema_version`. In the Markdown it is one line under
+the byline, such as `_Loop practice · cycle 2, question 5 of 30 · seen before_` or
+`_Learning practice · review 1 of 3_`; an exercise from before practice modes has none.
+
 In the Markdown a carried-over exercise has one more line under its byline, and is
 otherwise printed in full again:
 
@@ -477,6 +483,38 @@ otherwise printed in full again:
 
 A rerun on the day the exercise was ended says `_Already completed: the next digest brings
 a new exercise._` (or `skipped`) there instead.
+
+### LeetCode practice
+
+`leetcode_practice` holds the practice settings in force when the digest was written and,
+when the practice mode had no exercise to give, why. It is not an error and does not make
+the run degraded: the digest shows the reason instead of an exercise.
+
+```json
+"leetcode_practice": {
+  "mode": "learning",
+  "sources": [{"id": "amd", "name": "AMD"}],
+  "state": "caught_up",
+  "message": "No reviews due. Next review: October 22.",
+  "next_review_on": "2026-10-22"
+}
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `mode` | string | `"coverage"`, `"loop"` or `"learning"`. See [leetcode.md](leetcode.md#question-sources-and-practice-modes). |
+| `sources` | array | The selected question sources, each with `id` and `name`. |
+| `state` | string | `"exercise"` when `leetcode` holds one. Otherwise why there is none: `"coverage_complete"` (every problem of the pool has been assigned in this pass), `"caught_up"` (learning: no review due yet) or `"learning_complete"` (learning: every problem has had all its reviews). |
+| `message` | string or `null` | What the digest says in place of the exercise, e.g. `"AMD coverage complete."`. `null` when there is an exercise. |
+| `next_review_on` | string or `null` | `"caught_up"`: the day the next review falls due, `YYYY-MM-DD`. Otherwise `null`. |
+
+In the Markdown, the LeetCode section then holds the message alone:
+
+```markdown
+## LeetCode Micro-Lesson
+
+_No reviews due. Next review: October 22._
+```
 
 #### Reference solution
 

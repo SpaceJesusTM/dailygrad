@@ -121,10 +121,13 @@ def test_status_before_anything_was_shown_creates_nothing(config, tmp_path):
     status = tutor.status(config, now=NOW)
 
     assert status["ok"] and status["enabled"] and status["hints_enabled"] and status["current"] is None
-    assert status["rotation"] == ["neetcode-150", "amd", "vanguard"]
-    assert status["next_track"] == {"id": "neetcode-150", "name": "NeetCode 150"}
+    assert status["practice"]["settings"] == {
+        "sources": ["neetcode-150", "amd", "vanguard"], "mode": "coverage", "review_interval_days": 7, "max_reviews": 3,
+    }  # fmt: skip
+    assert status["next_track"] is None  # tracks no longer take turns
+    assert status["practice"]["upcoming"]["state"] == "exercise" and status["practice"]["coverage"]["encountered"] == 0
     assert status["catalog"] == {"snapshot": CATALOG.snapshot, "problems": 182}
-    assert [(t["id"], t["problems"], t["shown"], t["in_rotation"]) for t in status["tracks"]] == [
+    assert [(t["id"], t["problems"], t["shown"], t["selected"]) for t in status["tracks"]] == [
         ("neetcode-150", 150, 0, True), ("amd", 17, 0, True), ("vanguard", 32, 0, True),
     ]  # fmt: skip
     assert status["tracks"][1]["publisher"] == "Interview Solver" and status["tracks"][1]["kind"] == "company"
@@ -150,7 +153,8 @@ def test_status_describes_the_current_exercise_without_the_answer(config):
     assert current["state"] == {"times_shown": 1, "attempted": False, "confidence": None, "solved_in_code": False}
     assert (current["exercise_id"], current["awaiting_completion"], current["outcome"]) == (2, True, None)
     assert (status["active_exercise_id"], status["completion_pending"]) == (2, True)
-    assert status["next_track"]["id"] == "vanguard" and status["progress"]["shown"] == 2
+    assert status["next_track"] is None and status["progress"]["shown"] == 2
+    assert current["practice"] is None  # seeded as an exercise from before practice modes
     assert [t["shown"] for t in status["tracks"]] == [2, 1, 0]  # two-sum counts for both lists that hold it
 
     published = json.dumps(status)
@@ -180,12 +184,13 @@ def test_status_says_when_the_exercise_is_not_todays(config):
     assert tutor.status(config, now=NOW)["current"]["is_today"] is False
 
 
-def test_status_counts_only_tracks_in_the_configured_rotation_as_active(config):
-    config.leetcode.rotation = ["amd"]
+def test_status_reports_which_sources_are_selected(config):
+    config.leetcode.sources = ["amd"]
 
     status = tutor.status(config, now=NOW)
 
-    assert [t["in_rotation"] for t in status["tracks"]] == [False, True, False] and status["next_track"]["id"] == "amd"
+    assert [t["selected"] for t in status["tracks"]] == [False, True, False]
+    assert status["practice"]["pool"] == {"problems": 17, "sources": ["amd"]}
 
 
 # --- the hint preference
@@ -212,13 +217,13 @@ def test_hints_can_be_switched_off_and_on_and_the_choice_persists(config, capsys
 def test_changing_the_preference_touches_neither_the_exercise_nor_the_database(config):
     show(config, "contains-duplicate")
     before = (rows(config, "leetcode_assignments"), rows(config, "runs"))
-    next_track = tutor.status(config, now=NOW)["next_track"]
+    practice = tutor.status(config, now=NOW)["practice"]
 
     tutor.set_hints(config, False)
     tutor.set_hints(config, True)
 
     assert (rows(config, "leetcode_assignments"), rows(config, "runs")) == before
-    assert tutor.status(config, now=NOW)["next_track"] == next_track == {"id": "amd", "name": "AMD"}  # the rotation did not move
+    assert tutor.status(config, now=NOW)["practice"] == practice  # practice did not move
 
 
 def test_turning_hints_off_hides_the_digests_hint_in_status_at_once(config):
@@ -609,7 +614,7 @@ def test_no_follow_up_ever_chooses_a_problem_or_advances_the_rotation(config, mo
 
     assert rows(config, "leetcode_assignments") == before and len(rows(config, "runs")) == 1
     status = tutor.status(config, now=NOW)
-    assert status["next_track"]["id"] == "amd" and status["progress"]["exercises"] == 1
+    assert status["practice"]["coverage"]["encountered"] == 1 and status["progress"]["exercises"] == 1
 
 
 # --- the command line
@@ -651,8 +656,8 @@ def test_the_plain_text_forms_say_what_happened(config, model, capsys, monkeypat
     options = ["--config", config_file]
 
     _, status, _ = run_cli(capsys, monkeypatch, options)
-    assert "Hints in digests:   on" in status and "Rotation:           NeetCode 150 -> AMD -> Vanguard (next: AMD)" in status
-    assert "Two Sum (easy)  https://leetcode.com/problems/two-sum/" in status and "AMD track. 0 answers sent, 1 of 2 hints given." in status
+    assert "Hints in digests:   on" in status and "Practice:           coverage from NeetCode 150 + AMD + Vanguard (182 problems" in status
+    assert "Two Sum (easy)  https://leetcode.com/problems/two-sum/" in status and "From AMD. 0 answers sent, 1 of 2 hints given." in status
     assert "Shown 1 time, not attempted, no confidence set, not solved in code." in status
     assert "Progress: 1 of 182 problems shown; 0 attempted" in status and TWO_SUM.approach not in status
 

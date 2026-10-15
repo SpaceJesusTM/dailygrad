@@ -1,4 +1,4 @@
-"""The LeetCode catalog: the packaged question bank, its validation, and the deterministic choice of the next problem."""
+"""The LeetCode catalog: the packaged question bank, its validation, and the pools practice draws from."""
 
 import re
 from collections import Counter
@@ -6,14 +6,9 @@ from collections import Counter
 import pytest
 
 from dailygrad.config import LEETCODE_TRACKS
-from dailygrad.leetcode import review_ranks
-from dailygrad.leetcode_catalog import (
-    CATEGORIES, DIFFICULTIES, CatalogError, gives_away, load_catalog, next_problem, spoiler_in, track_for_day,
-)  # fmt: skip
-from dailygrad.models import Problem
+from dailygrad.leetcode_catalog import CATEGORIES, DIFFICULTIES, CatalogError, gives_away, load_catalog, spoiler_in
 
 CATALOG = load_catalog()
-ROTATION = list(LEETCODE_TRACKS)
 
 SOURCE = """
 [[source]]
@@ -55,25 +50,6 @@ def write_catalog(tmp_path, problem=PROBLEM, counts=(1, 1, 1), header='[catalog]
     path = tmp_path / "leetcode.toml"
     path.write_text(header + sources + problem, encoding="utf-8")
     return path
-
-
-def make_problem(id, tracks, difficulty="easy", category="arrays-hashing"):
-    return Problem(
-        id=id, number=abs(hash(id)) % 9000 + 1, title=id, difficulty=difficulty, category=category, tracks=tuple(tracks),
-        statement="s", example_input="i", example_output="o", constraints=("c",), hints=("h",), spoilers=("x",),
-        approach="a", time="O(n)", space="O(1)", edge_cases=("e",),
-    )  # fmt: skip
-
-
-def simulate(tracks, rotation, days, ranks=None):
-    """Run the rotation for `days` days over {track: [problems in order]}. Returns [(track, problem id, review)]."""
-    shown, result = [], []
-    for _ in range(days):
-        track = track_for_day(rotation, len(shown))
-        problem, review = next_problem(tracks[track], shown, ranks)
-        shown.append(problem.id)
-        result.append((track, problem.id, review))
-    return result
 
 
 # --- the packaged catalog
@@ -125,7 +101,7 @@ def test_a_problem_listed_by_several_sources_is_one_entry_with_every_track():
     assert CATALOG.get("two-sum").tracks == ("neetcode-150", "amd")
     assert CATALOG.get("course-schedule").tracks == ("neetcode-150", "vanguard")
     assert CATALOG.get("climbing-stairs").tracks == ("neetcode-150", "amd", "vanguard")
-    assert [source.id for source in CATALOG.sources_of(CATALOG.get("climbing-stairs"))] == ROTATION
+    assert [source.id for source in CATALOG.sources_of(CATALOG.get("climbing-stairs"))] == list(LEETCODE_TRACKS)
 
     listed = sum(len(problem.tracks) for problem in CATALOG.problems)
     assert listed == 150 + 17 + 32 and listed - len(CATALOG.problems) == 17  # 15 overlap; two of them twice
@@ -274,103 +250,36 @@ def test_generated_text_gives_the_approach_away_by_spoiler_complexity_or_code():
     assert not gives_away(two_sum, "Could remembering what you have already seen save repeated work?")
 
 
-# --- the rotation and each track's progress
+# --- pools: the selected sources together
 
 
-def test_the_default_rotation_repeats_neetcode_amd_vanguard():
-    assert [track_for_day(ROTATION, day) for day in range(7)] == [
-        "neetcode-150", "amd", "vanguard", "neetcode-150", "amd", "vanguard", "neetcode-150",
-    ]  # fmt: skip
+@pytest.mark.parametrize("track", LEETCODE_TRACKS)
+def test_a_one_source_pool_is_that_sources_list(track):
+    assert CATALOG.pool((track,)) == CATALOG.track(track)
+    assert len(CATALOG.pool((track,))) == CATALOG.sources[track].problems
 
 
-def test_a_rotation_can_be_reconfigured():
-    assert [track_for_day(["amd"], day) for day in range(3)] == ["amd", "amd", "amd"]
-    assert [track_for_day(["amd", "amd", "vanguard"], day) for day in range(4)] == ["amd", "amd", "vanguard", "amd"]
+def test_a_pool_holds_each_problem_once_however_many_of_its_sources_list_it():
+    everything = CATALOG.pool(LEETCODE_TRACKS)
+    ids = [problem.id for problem in everything]
+    assert len(ids) == len(set(ids)) == len(CATALOG.problems) == 182  # 150 + 17 + 32 listings, 182 problems
+
+    amd_and_neetcode = CATALOG.pool(("amd", "neetcode-150"))
+    union = {p.id for p in CATALOG.track("amd")} | {p.id for p in CATALOG.track("neetcode-150")}
+    assert {problem.id for problem in amd_and_neetcode} == union
+    assert len(amd_and_neetcode) == len(union) < 150 + 17  # the overlap is counted once
+    assert CATALOG.pool(("amd", "neetcode-150")) == CATALOG.pool(("neetcode-150", "amd"))  # the selection's order is not the pool's
 
 
-def test_each_track_advances_through_its_own_problems():
-    tracks = {
-        "a": [make_problem(f"a{n}", ["a"]) for n in range(3)],
-        "b": [make_problem(f"b{n}", ["b"]) for n in range(3)],
-    }
-
-    days = simulate(tracks, ["a", "b"], 6)
-
-    assert days == [("a", "a0", False), ("b", "b0", False), ("a", "a1", False), ("b", "b1", False), ("a", "a2", False), ("b", "b2", False)]
+def test_a_problem_in_a_pool_keeps_every_list_it_is_on():
+    two_sum = next(problem for problem in CATALOG.pool(("amd",)) if problem.id == "two-sum")
+    assert set(two_sum.tracks) >= {"neetcode-150", "amd"}  # reported by every list, not only the selected one
+    assert [source.id for source in CATALOG.sources_of(two_sum)] == list(two_sum.tracks)
 
 
-def test_a_problem_another_track_already_showed_is_not_repeated_while_new_ones_remain():
-    shared = make_problem("shared", ["a", "b"])
-    tracks = {"a": [shared, make_problem("a1", ["a"])], "b": [shared, make_problem("b1", ["b"])]}
-
-    days = simulate(tracks, ["a", "b"], 3)
-
-    assert days == [("a", "shared", False), ("b", "b1", False), ("a", "a1", False)]  # b skips what a showed
-
-
-def test_a_track_whose_problems_were_all_used_elsewhere_keeps_its_day_as_a_review():
-    shared = [make_problem("s0", ["a", "b"]), make_problem("s1", ["a", "b"])]
-    tracks = {"a": [*shared, make_problem("a2", ["a"]), make_problem("a3", ["a"])], "b": shared}
-
-    days = simulate(tracks, ["a", "a", "b"], 3)
-
-    assert days == [("a", "s0", False), ("a", "s1", False), ("b", "s0", True)]  # never an empty or skipped day
-
-
-def test_an_exhausted_track_recycles_least_shown_first_without_losing_history():
-    order = [make_problem(f"p{n}", ["a"]) for n in range(3)]
-
-    days = simulate({"a": order}, ["a"], 9)
-
-    assert [problem for _, problem, _ in days] == ["p0", "p1", "p2", "p0", "p1", "p2", "p0", "p1", "p2"]
-    assert [review for _, _, review in days] == [False] * 3 + [True] * 6
-    assert Counter(problem for _, problem, _ in days) == {"p0": 3, "p1": 3, "p2": 3}
-
-
-def test_a_review_never_repeats_the_previous_day_when_there_is_another_choice():
-    order = [make_problem("p0", ["a"]), make_problem("p1", ["a"])]
-
-    assert next_problem(order, ["p1", "p0"]) == (order[1], True)
-    assert next_problem(order, ["p0", "p1", "p1"]) == (order[0], True)
-    assert next_problem(order[:1], ["p0"]) == (order[0], True)  # a one-problem track has no other choice
-
-
-def test_among_equally_shown_problems_a_review_takes_the_one_marked_as_needing_it():
-    order = [make_problem(f"p{n}", ["a"]) for n in range(4)]
-    shown = ["p0", "p1", "p2", "p3", "x"]
-    ranks = review_ranks({
-        "p0": (None, "comfortable", None),
-        "p1": (None, None, "2026-10-09T00:00:00"),  # solved in code
-        "p2": (None, "needs-review", None),
-    })  # fmt: skip
-
-    assert ranks == {"p0": 2, "p1": 3, "p2": 0}
-    assert next_problem(order, shown, ranks)[0].id == "p2"
-    assert next_problem(order, shown)[0].id == "p0"  # with nothing marked: the one shown longest ago
-    assert next_problem(order, [*shown, "p2", "y"], ranks)[0].id == "p3"  # a mark never beats being shown less often
-
-
-def test_the_choice_depends_only_on_the_catalog_and_the_history():
-    order, shown = CATALOG.track("amd"), ["two-sum", "contains-duplicate", "move-zeroes"]
-
-    assert next_problem(order, shown) == next_problem(order, list(shown))
-    assert next_problem(order, shown) == (CATALOG.get("merge-sorted-array"), False)
-    assert shown == ["two-sum", "contains-duplicate", "move-zeroes"]  # and it does not touch the history
-
-
-def test_two_years_of_the_real_rotation_never_leave_a_day_empty():
-    tracks = {track: CATALOG.track(track) for track in ROTATION}
-    days = simulate(tracks, ROTATION, 730)
-
-    assert [track for track, _, _ in days[:6]] == ROTATION * 2
-    assert all(CATALOG.get(problem_id) and track in CATALOG.get(problem_id).tracks for track, problem_id, _ in days)
-
-    first_showings = [problem_id for _, problem_id, review in days if not review]
-    assert len(first_showings) == len(set(first_showings)) == 182  # every problem is new exactly once
-    for track in ROTATION:  # a track reviews only once nothing of its own is left unseen
-        own = [(problem_id, review) for day_track, problem_id, review in days if day_track == track]
-        first_review = next(index for index, (_, review) in enumerate(own) if review)
-        assert not any(review for _, review in own[:first_review]) and all(review for _, review in own[first_review:])
-    new = Counter(track for track, _, review in days if not review)
-    # The company tracks reach the problems they share with NeetCode 150 first, so it is NeetCode that skips them.
-    assert new == {"neetcode-150": 135, "amd": 17, "vanguard": 30}
+def test_a_pool_introduces_easy_problems_first_then_walks_the_topics():
+    pool = CATALOG.pool(LEETCODE_TRACKS)
+    keys = [(DIFFICULTIES.index(p.difficulty), list(CATEGORIES).index(p.category)) for p in pool]
+    assert keys == sorted(keys)
+    within = [p.id for p in pool if (p.difficulty, p.category) == ("easy", "arrays-hashing")]
+    assert within == [p.id for p in CATALOG.problems if (p.difficulty, p.category) == ("easy", "arrays-hashing")]  # file order

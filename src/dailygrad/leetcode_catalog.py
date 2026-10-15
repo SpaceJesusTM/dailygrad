@@ -1,7 +1,7 @@
-"""The LeetCode catalog: loading the question bank, and deciding which problem comes next.
+"""The LeetCode catalog: loading the question bank, and the order in which its problems are introduced.
 
-Everything here is deterministic. Which problem is assigned next depends only on the catalog file,
-the rotation and the history of problems already shown; the model never chooses a problem.
+Which problem is assigned next is decided in practice.py, from this catalog, the practice
+settings and the history of exercises; the model never chooses a problem.
 
 The catalog is a snapshot made during development from three sources (see docs/leetcode.md).
 A run reads only the packaged file: it never contacts LeetCode or any of the sources.
@@ -82,12 +82,17 @@ class Catalog:
         return tuple(self.sources[track] for track in problem.tracks)
 
     def track(self, track: str) -> list[Problem]:
-        """A track's problems in the order they are first shown.
+        """A track's problems in the order they are first shown."""
+        return self.pool((track,))
+
+    def pool(self, tracks) -> list[Problem]:
+        """The problems of the given tracks, each once however many of them list it, in the order they are introduced.
 
         Easy problems come first, then medium, then hard. Within a difficulty the topics follow
-        CATEGORIES, so each pass revisits the topics in the same order at a higher level.
+        CATEGORIES, so each pass revisits the topics in the same order at a higher level; within
+        a topic, the order of the file.
         """
-        members = [problem for problem in self.problems if track in problem.tracks]
+        members = [problem for problem in self.problems if any(track in problem.tracks for track in tracks)]
         topics = list(CATEGORIES)
         return sorted(members, key=lambda p: (DIFFICULTIES.index(p.difficulty), topics.index(p.category)))
 
@@ -218,37 +223,3 @@ def spoiler_in(problem: Problem, text: str, already_said: str = "") -> str | Non
 def gives_away(problem: Problem, text: str) -> bool:
     """Whether generated text would reveal the approach: a spoiler, a stated complexity, or code."""
     return bool(spoiler_in(problem, text)) or bool(STATED_COMPLEXITY.search(text)) or "```" in text
-
-
-def track_for_day(rotation: list[str], days_assigned: int) -> str:
-    """The track whose turn it is, given how many exercises have been assigned so far.
-
-    The rotation advances with each exercise assigned, not with the calendar: an exercise
-    shown for several days takes one turn, and a day on which DailyGrad did not run skips none.
-    """
-    return rotation[days_assigned % len(rotation)]
-
-
-def next_problem(order: list[Problem], shown: list[str], review_rank: dict[str, int] | None = None) -> tuple[Problem, bool]:
-    """The next problem of a track, and whether it is a review.
-
-    `order` is the track's problems as Catalog.track gives them, and `shown` the IDs of every
-    problem shown so far on any track, oldest first. The first problem not yet shown anywhere
-    is next, so a problem that another track already used is not repeated while new ones remain.
-
-    Once the whole track has been shown, the day is a review: the problem shown least often,
-    and among those the one the user ranked most in need of it (`review_rank`, lower first),
-    then the one shown longest ago. The track therefore never loses its day, and nothing in
-    the history is removed to make a problem available again.
-    """
-    seen = set(shown)
-    for problem in order:
-        if problem.id not in seen:
-            return problem, False
-
-    times = Counter(shown)
-    last_shown = {problem_id: position for position, problem_id in enumerate(shown)}
-    ranks = review_rank or {}
-    choices = [problem for problem in order if problem.id != shown[-1]] or order  # not yesterday's again
-    problem = min(choices, key=lambda p: (times[p.id], ranks.get(p.id, 1), last_shown[p.id]))
-    return problem, True

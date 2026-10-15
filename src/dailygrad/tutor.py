@@ -5,8 +5,9 @@ These are the actions behind `dailygrad leetcode`. Each is short and bounded, so
 or a program acting for one can call it: it reads the database, makes at most one model
 request, and returns plain data. An exercise stays the current one until the user says so:
 `complete` closes it and leaves the next for the next run to choose, and `advance` closes it and
-assigns the next at once. Nothing else chooses a problem or advances the rotation, and nothing
-here decides for the user that an exercise is finished or a problem solved.
+assigns the next at once, as the practice mode decides (practice.py). Nothing else chooses a
+problem or moves practice on, and nothing here decides for the user that an exercise is
+finished or a problem solved.
 
 The user's answer is untrusted text. It is read from standard input, capped, and handed to the
 model as data between delimiters. The model's reply is used only as validated plain text.
@@ -18,9 +19,9 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
-from dailygrad import db, leetcode, llm
+from dailygrad import db, leetcode, llm, practice
 from dailygrad.config import Config
-from dailygrad.leetcode_catalog import CATEGORIES, ID_PATTERN, Catalog, load_catalog, spoiler_in, track_for_day
+from dailygrad.leetcode_catalog import CATEGORIES, ID_PATTERN, Catalog, load_catalog, spoiler_in
 from dailygrad.models import Problem
 from dailygrad.output import leetcode_document
 from dailygrad.stories import shorten
@@ -144,19 +145,20 @@ def status(config: Config, now: datetime | None = None) -> dict:
     Nothing here comes from the hidden half of the catalog: no approach, complexity, edge case or topic.
     """
     catalog = load_catalog()
-    shown, progress, latest, turns, days, outcomes = _read_state(config)
+    shown, progress, latest, turns, days, outcomes, state = _read_state(config)
     hints_on, problem = leetcode.read_hints(config.leetcode_preferences_path)
-    today = (now or datetime.now(timezone.utc)).astimezone().date().isoformat()
-    rotation = config.leetcode.rotation
+    today = (now or datetime.now(timezone.utc)).astimezone().date()
+    settings, settings_problem = practice.settings_or_defaults(config)
 
     current = None
     exercise = leetcode.restore(catalog, latest)
     if exercise:
         exercise.hints_on = hints_on
+        exercise.practice = practice.describe(catalog, state, exercise.assignment_id, settings)
         leetcode.place(exercise, days)
         current = leetcode_document(exercise, with_reference=False) | {
             "date": exercise.assigned_on,  # the day a digest first showed it; null if none has yet
-            "is_today": today in days,  # whether today's digest shows it
+            "is_today": today.isoformat() in days,  # whether today's digest shows it
             "outcome": latest.outcome,  # "completed" or "skipped" once the user has said so
             "closed_at": latest.closed_at,
             "hints_given": _hints_given(latest, turns),
@@ -167,16 +169,16 @@ def status(config: Config, now: datetime | None = None) -> dict:
     known = {problem.id for problem in catalog.problems}
     marked = [values for problem_id, values in progress.items() if problem_id in known]
     seen = set(shown) & known
-    next_track = track_for_day(rotation, len(shown))
+    active = latest if latest and latest.outcome is None else None
     return {
         "ok": True,
         "enabled": config.leetcode.enabled,
         "hints_enabled": hints_on,
         "preferences_file": str(config.leetcode_preferences_path.resolve()),
         "preferences_problem": problem,  # set if the file exists but cannot be used; hints then count as off
-        "rotation": list(rotation),
-        # The track of the exercise after the current one: chosen when that one is completed or skipped.
-        "next_track": {"id": next_track, "name": catalog.sources[next_track].name},
+        # The practice settings, how far each mode has come and what comes after the current exercise.
+        "practice": practice_document(catalog, config, settings, settings_problem, state, today, active),
+        "next_track": None,  # from before practice modes, when tracks took turns: there is no next track now
         # The exercise `mark complete` and `next` act on, by the ID to give them; null when the
         # current one is closed and the next has not been assigned yet.
         "active_exercise_id": current["exercise_id"] if current and current["awaiting_completion"] else None,
@@ -187,14 +189,14 @@ def status(config: Config, now: datetime | None = None) -> dict:
                 "id": source.id, "name": source.name, "kind": source.kind, "publisher": source.publisher,
                 "url": source.url, "retrieved": source.retrieved, "problems": source.problems,
                 "shown": sum(p.id in seen for p in catalog.problems if source.id in p.tracks),
-                "in_rotation": source.id in rotation,
+                "selected": source.id in settings.sources,
             }
             for source in catalog.sources.values()
         ],  # fmt: skip
         "progress": {
             "problems": len(catalog.problems),
             "shown": len(seen),
-            "exercises": len(shown),  # exercises assigned; more than `shown` once reviews begin
+            "exercises": len(shown),  # exercises assigned; more than `shown` once problems repeat
             "completed": outcomes["completed"],  # exercises, not problems: a review is completed again
             "skipped": outcomes["skipped"],
             "attempted": sum(attempted is not None for attempted, _, _ in marked),
@@ -204,6 +206,116 @@ def status(config: Config, now: datetime | None = None) -> dict:
         },
         "catalog": {"snapshot": catalog.snapshot, "problems": len(catalog.problems)},
     }
+
+
+def practice_document(
+    catalog: Catalog, config: Config, settings: practice.Settings, problem: str | None, state: practice.Snapshot,
+    today, active: db.Assigned | None,
+) -> dict:  # fmt: skip
+    """The practice settings with where each comes from, the sources to choose from, and progress in every mode."""
+    pool = catalog.pool(settings.sources)
+    return {
+        "settings": settings.document(),
+        "from": settings.origin,  # "preferences" (set at runtime) or "config" (the config file or the default)
+        "modes": list(practice.PRACTICE_MODES),
+        "available_sources": [
+            {
+                "id": source.id, "name": source.name, "kind": source.kind, "publisher": source.publisher,
+                "problems": sum(source.id in p.tracks for p in catalog.problems), "selected": source.id in settings.sources,
+            }
+            for source in catalog.sources.values()
+        ],  # fmt: skip
+        "pool": {"problems": len(pool), "sources": list(settings.sources)},  # each problem once, however many lists hold it
+        "active_exercise_id": active.id if active else None,
+        **practice.overview(catalog, settings, state, today, active),
+        "preferences_file": str(config.practice_preferences_path.resolve()),
+        "preferences_problem": problem,  # set if the file exists but cannot be used; the config file's settings are shown
+    }
+
+
+def practice_status(config: Config, now: datetime | None = None) -> dict:
+    """`dailygrad leetcode practice`: the settings and progress alone, read without creating or changing anything."""
+    catalog = load_catalog()
+    _, _, latest, _, days, _, state = _read_state(config)
+    settings, problem = practice.settings_or_defaults(config)
+    today = (now or datetime.now(timezone.utc)).astimezone().date()
+    active = latest if latest and latest.outcome is None else None
+    result = {"ok": True, "enabled": config.leetcode.enabled}
+    result |= practice_document(catalog, config, settings, problem, state, today, active)
+    result["active"] = None
+    if active:  # the exercise in progress, which settings changes never replace
+        result["active"] = _identity_from(catalog, active, days) | {
+            "practice": practice.describe(catalog, state, active.id, settings)
+        }
+    return result
+
+
+def set_practice(config: Config, changes: dict, now: datetime | None = None) -> dict:
+    """Change the practice settings. Only the settings file is written: no exercise is ended or chosen."""
+    result = practice.change(config, changes, now)
+    return result | {"active_exercise_id": _active_id(config)}
+
+
+def reset_practice(config: Config) -> dict:
+    result = practice.reset(config)
+    return result | {"active_exercise_id": _active_id(config)}
+
+
+def restart_coverage(config: Config, confirmed: bool, now: datetime | None = None) -> dict:
+    """Begin a fresh coverage pass, or with `confirmed` false say whether one would change anything.
+
+    Only a marker is added (leetcode_coverage_passes): every exercise, outcome and mark stays. The
+    exercise in progress, if any, counts as the new pass's first, so the pass does not offer it again.
+    """
+    now = now or datetime.now(timezone.utc)
+    catalog = load_catalog()
+    settings, _ = practice.settings_or_defaults(config)
+    changed = False
+    if confirmed and config.db_path.is_file():
+        conn = db.connect(config.db_path)
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")  # a run or `next` recording at this moment finishes first
+                after = restart_point(practice.snapshot(conn), db.active_leetcode(conn))
+                if after is not None:
+                    db.start_coverage_pass(conn, after, now)
+                    changed = True
+        finally:
+            conn.close()
+    _, _, latest, _, _, _, state = _read_state(config)
+    active = latest if latest and latest.outcome is None else None
+    return {
+        "ok": True,
+        "action": "restart_coverage",
+        "dry_run": not confirmed,
+        "changed": changed,
+        # Whether a restart would begin a new pass now: false while the current one has nothing in it.
+        "would_change": restart_point(state, active) is not None,
+        "coverage": practice.overview(catalog, settings, state, now.astimezone().date(), active)["coverage"],
+        "active_exercise_id": active.id if active else None,
+        "history_kept": True,
+    }
+
+
+def restart_point(state: practice.Snapshot, active: db.Assigned | None) -> int | None:
+    """The after_assignment_id of a new coverage pass begun now, or None if it would be the current one again."""
+    newest = state.history[-1].id if state.history else 0
+    after = active.id - 1 if active else newest
+    current = state.passes[-1][1] if state.passes else 0
+    return after if after > current else None
+
+
+def _active_id(config: Config) -> int | None:
+    conn = db.read_only(config.db_path)
+    if conn is None:
+        return None
+    try:
+        active = db.active_leetcode(conn)
+        return active.id if active else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
 
 
 def set_hints(config: Config, enabled: bool) -> dict:
@@ -367,14 +479,15 @@ def complete(
                 raise _stale(conn, catalog, target, newest)
             exercise = _identity(conn, catalog, db.leetcode_by_id(conn, target.id))
             pending = db.active_leetcode(conn) is not None
-            shown = db.leetcode_history(conn)
+            upcoming = None if pending else _upcoming(conn, catalog, config, now)
         return {
             "ok": True,
             "action": "complete",
             "changed": changed,
             "exercise": exercise,
             "completion_pending": pending,
-            "next_track": _next_track(config, catalog, shown) if not pending else None,
+            "next_track": None,  # from before practice modes; see `upcoming`
+            "upcoming": upcoming,  # what the next exercise will be: null while another is already current
         }
     finally:
         conn.close()
@@ -396,20 +509,27 @@ def advance(
     now = now or datetime.now(timezone.utc)
     if not config.leetcode.enabled:
         raise TutorError("leetcode_disabled", "LeetCode exercises are switched off in the configuration")
+    settings = _settings(config)  # before anything changes: without usable settings nothing is skipped
     catalog, conn = load_catalog(), _open(config)
     try:
         with conn:
             conn.execute("BEGIN IMMEDIATE")
             target, newest = _target(conn, catalog, exercise_id, problem_id)
-            changed = target.id == newest.id
-            if changed:
-                db.close_leetcode(conn, target.id, "skipped", now)  # no effect on one already completed
-                following = leetcode.assign(catalog, conn, config.leetcode.rotation)
-                db.record_leetcode(conn, 0, following, config.ollama.model, now)
+            changed = False
+            if target.id == newest.id:
+                changed = db.close_leetcode(conn, target.id, "skipped", now)  # no effect on one already completed
+                following = practice.next_exercise(conn, catalog, settings, now.astimezone().date(), now)
+                if isinstance(following, practice.Choice):  # else nothing is left to assign: see `upcoming`
+                    chosen = leetcode.from_choice(catalog, following, settings)
+                    leetcode.record(conn, 0, chosen, config.ollama.model, now)
+                    changed = True
             elif target.outcome is None or db.leetcode_before(conn, newest.id) != target.id:
                 raise _stale(conn, catalog, target, newest)
             previous = _identity(conn, catalog, db.leetcode_by_id(conn, target.id))
             active = leetcode.restore(catalog, db.active_leetcode(conn))
+            upcoming = None if active else _upcoming(conn, catalog, config, now)
+            if active:
+                active.practice = practice.describe(catalog, practice.snapshot(conn), active.assignment_id, settings)
         if active:
             active.hints_on = leetcode.read_hints(config.leetcode_preferences_path)[0]
             leetcode.place(active, [])
@@ -419,6 +539,7 @@ def advance(
             "changed": changed,
             "previous": previous,  # the exercise moved on from, with how it ended
             "active": leetcode_document(active, with_reference=False),  # the new current exercise: no answer in it
+            "upcoming": upcoming,  # with no new exercise, why: coverage complete, or no review due yet
         }
     finally:
         conn.close()
@@ -461,10 +582,36 @@ def _stale(conn: sqlite3.Connection, catalog: Catalog, target: db.Assigned, newe
     )
 
 
+def _settings(config: Config) -> practice.Settings:
+    try:
+        return practice.settings(config)
+    except practice.PracticeError as exc:
+        raise TutorError(exc.code, str(exc)) from exc
+
+
+def _upcoming(conn: sqlite3.Connection, catalog: Catalog, config: Config, now: datetime) -> dict | None:
+    """What the next exercise will be, when none is open: one, a new loop cycle, or why there is none. Reads only."""
+    try:
+        settings = practice.settings(config)
+    except practice.PracticeError:
+        return None
+    following = practice.choose(catalog, settings, practice.snapshot(conn), now.astimezone().date())
+    if following is None:
+        return {"state": "new_cycle", "message": "A new loop cycle, freshly shuffled, begins with the next exercise.",
+                "next_review_on": None}  # fmt: skip
+    if isinstance(following, practice.Waiting):
+        return {"state": following.state, "message": following.message(catalog), "next_review_on": following.next_review_on}
+    return {"state": "exercise", "message": None, "next_review_on": None}
+
+
 def _identity(conn: sqlite3.Connection, catalog: Catalog, saved: db.Assigned) -> dict:
     """Which exercise a result is about, and how it stands. Nothing of the problem's content or its answer."""
+    return _identity_from(catalog, saved, db.leetcode_days(conn, saved.id))
+
+
+def _identity_from(catalog: Catalog, saved: db.Assigned, days: list[str] | None) -> dict:
     problem = catalog.get(saved.problem_id)
-    days = db.leetcode_days(conn, saved.id)
+    days = days if days is not None else ([saved.run_date] if saved.run_date else [])
     return {
         "exercise_id": saved.id,
         "problem_id": saved.problem_id,
@@ -478,11 +625,6 @@ def _identity(conn: sqlite3.Connection, catalog: Catalog, saved: db.Assigned) ->
         "outcome": saved.outcome,
         "closed_at": saved.closed_at,
     }
-
-
-def _next_track(config: Config, catalog: Catalog, shown: list[str]) -> dict:
-    track = track_for_day(config.leetcode.rotation, len(shown))
-    return {"id": track, "name": catalog.sources[track].name}
 
 
 # --- prompts and parsing
@@ -669,13 +811,15 @@ def _exercise(conn: sqlite3.Connection, catalog: Catalog, problem_id: str | None
     return row, problem
 
 
-def _read_state(config: Config) -> tuple[list[str], dict, db.Assigned | None, list, list[str], dict[str, int]]:
-    """(problems assigned, progress, the newest exercise, its exchanges, the days it was shown, outcome counts).
+def _read_state(config: Config) -> tuple[list[str], dict, db.Assigned | None, list, list[str], dict[str, int], practice.Snapshot]:
+    """(problems assigned, progress, the newest exercise, its exchanges, the days it was shown, outcome counts,
+    what the practice modes decide from).
 
     Read without changing the database, so a database from before exercises were kept until
-    completed is read as it is: its newest exercise is the current one, shown on the one day it was.
+    completed, or before practice modes, is read as it is: its newest exercise is the current
+    one, shown on the one day it was, and all of it is the first coverage pass.
     """
-    nothing = [], {}, None, [], [], dict.fromkeys(db.OUTCOMES, 0)
+    nothing = [], {}, None, [], [], dict.fromkeys(db.OUTCOMES, 0), practice.Snapshot()
     conn = db.read_only(config.db_path)
     if conn is None:
         return nothing
@@ -683,7 +827,10 @@ def _read_state(config: Config) -> tuple[list[str], dict, db.Assigned | None, li
         latest = db.latest_leetcode(conn)
         turns = db.leetcode_turns(conn, latest.id) if latest else []
         days = db.leetcode_days(conn, latest.id) if latest else []
-        return db.leetcode_history(conn), db.leetcode_progress(conn), latest, turns, days, db.leetcode_outcomes(conn)
+        return (
+            db.leetcode_history(conn), db.leetcode_progress(conn), latest, turns, days, db.leetcode_outcomes(conn),
+            practice.snapshot(conn),
+        )  # fmt: skip
     except sqlite3.OperationalError:  # a database from before the LeetCode tables: nothing has been shown
         return nothing
     finally:

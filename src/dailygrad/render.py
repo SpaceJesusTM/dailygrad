@@ -3,6 +3,7 @@
 import re
 from datetime import date
 
+from dailygrad.config import UNLIMITED
 from dailygrad.leetcode_catalog import PROMPTS
 from dailygrad.models import Exercise, Lesson, Story
 
@@ -18,12 +19,13 @@ class RepairMismatch(ValueError):
 
 def render_digest(
     day: date, stories: list[Story], failed_sources: list[str], lesson: Lesson | None,
-    exercise: Exercise | None = None, leetcode_failed: bool = False,
+    exercise: Exercise | None = None, leetcode_failed: bool = False, practice: dict | None = None,
 ) -> str:  # fmt: skip
     """Render the digest. A lesson of None means lesson generation failed this run.
 
-    The LeetCode section follows the lesson when there is an exercise, or when one was due and
-    could not be prepared (`leetcode_failed`). With neither, the digest has no such section.
+    The LeetCode section follows the lesson when there is an exercise, when one was due and
+    could not be prepared (`leetcode_failed`), or when the practice mode had none to give
+    (`practice` then says why). With none of these, the digest has no such section.
     """
     lines = [f"# DailyGrad — {day.isoformat()}", "", "## AI News", ""]
     if not stories:
@@ -33,8 +35,9 @@ def render_digest(
     if failed_sources:
         lines += [f"_Sources unavailable this run: {', '.join(failed_sources)}._", ""]
     lines += _lesson_lines(lesson)
-    if exercise or leetcode_failed:
-        lines += _leetcode_lines(exercise)
+    waiting = practice.get("message") if practice and not exercise and not leetcode_failed else None
+    if exercise or leetcode_failed or waiting:
+        lines += _leetcode_lines(exercise, waiting)
     return "\n".join(lines)
 
 
@@ -61,19 +64,21 @@ def _lesson_lines(lesson: Lesson | None) -> list[str]:
     return lines
 
 
-def _leetcode_lines(exercise: Exercise | None) -> list[str]:
+def _leetcode_lines(exercise: Exercise | None, waiting: str | None = None) -> list[str]:
     """The exercise: enough of the problem to think it through, and nothing of the answer.
 
     The approach, the complexities and the edge cases stay in the catalog, and so does the
     topic, because naming it names the technique. Only the one hint written for the day is
-    shown, and only while hints are on.
+    shown, and only while hints are on. Without an exercise, `waiting` says why there is none.
     """
     lines = ["## LeetCode Micro-Lesson", ""]
+    if exercise is None and waiting:
+        return lines + [f"_{_escape(waiting)}_", ""]
     if exercise is None:
         return lines + ["_No LeetCode exercise today: it could not be prepared. No problem was used up._", ""]
     problem = exercise.problem
     byline = [problem.difficulty.capitalize()]
-    if exercise.review:
+    if exercise.review and not exercise.practice:  # a practice line says what kind of repeat it is
         byline.insert(0, "Review")
     byline.append("Source: " + ", ".join(source.credit for source in exercise.sources))
     if problem.premium:
@@ -83,6 +88,7 @@ def _leetcode_lines(exercise: Exercise | None) -> list[str]:
         "",
         f"_{_escape(' · '.join(byline))}_",
         "",
+        *([f"_{_escape(practice_label(exercise.practice))}_", ""] if exercise.practice else []),
         *_progress_lines(exercise),
         _escape(problem.statement),
         "",
@@ -101,6 +107,25 @@ def _leetcode_lines(exercise: Exercise | None) -> list[str]:
     if exercise.shown_hint:
         lines += [f"**Hint:** {_escape(exercise.shown_hint)}", ""]
     return lines + ["_No implementation required: describe your approach in words._", ""]
+
+
+def practice_label(practice: dict | None) -> str:
+    """One line on why an exercise was chosen: "Loop practice · cycle 2, question 5 of 30"."""
+    if not practice:
+        return ""
+    parts = [f"{practice['mode'].capitalize()} practice"]
+    if practice.get("cycle"):
+        cycle = practice["cycle"]
+        parts.append(f"cycle {cycle['number']}, question {cycle['position']} of {cycle['size']}")
+    if practice.get("review"):
+        review = practice["review"]
+        limit = "" if review["limit"] == UNLIMITED else f" of {review['limit']}"
+        parts.append(f"review {review['number']}{limit}")
+    elif practice.get("encounter") == "first":
+        parts.append("first encounter")
+    elif practice.get("encounter") == "repeat":
+        parts.append("seen before")
+    return " · ".join(parts)
 
 
 def _progress_lines(exercise: Exercise) -> list[str]:

@@ -26,7 +26,11 @@ job, so both use the same data directory.
 The same holds for `dailygrad leetcode`: its commands never write a digest or start a run,
 so they cannot disturb a schedule. `mark complete` and `next` end the current exercise; a
 run that is under way at that moment keeps the exercise it started with, and the change
-shows from the next run. See [leetcode.md](leetcode.md).
+shows from the next run. `practice set` changes the question sources or the practice mode;
+a run under way that has not yet recorded a new exercise chooses again when it records it,
+so the change applies at once, and the exercise in progress is never replaced. Learning-mode
+reviews fall due on calendar days in the time zone the scheduled job runs in, the one that
+dates the digest, so give the job the same `TZ` as your own day. See [leetcode.md](leetcode.md).
 
 The examples assume DailyGrad is installed in a virtual environment at
 `/home/you/dailygrad/.venv` with its config at `/home/you/dailygrad/dailygrad.toml`.

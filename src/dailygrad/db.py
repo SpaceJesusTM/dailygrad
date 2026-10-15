@@ -9,6 +9,7 @@ was (items.shown_run_id and summaries); a later showing of the same item is a ro
 repeat_showings.
 """
 
+import json
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -147,6 +148,41 @@ CREATE TABLE IF NOT EXISTS leetcode_progress (
     confidence TEXT,  -- 'needs-review' or 'comfortable'
     solved_at TEXT,  -- when the user said they had solved it in code
     updated_at TEXT NOT NULL
+);
+
+-- Why an exercise was chosen, by the practice mode in force (practice.py): at most one row each,
+-- written with the exercise. An exercise from before practice modes has none.
+CREATE TABLE IF NOT EXISTS leetcode_schedule (
+    assignment_id INTEGER PRIMARY KEY REFERENCES leetcode_assignments(id),
+    mode TEXT NOT NULL,  -- 'coverage', 'loop' or 'learning'
+    sources TEXT NOT NULL,  -- the selected source IDs, as a JSON list
+    encounter TEXT NOT NULL,  -- 'first' (never assigned before), 'repeat' or 'review' (a learning-mode review)
+    cycle_id INTEGER REFERENCES leetcode_cycles(id),  -- loop mode: the cycle it belongs to
+    review_number INTEGER,  -- a review: 1 for the first after the problem's first completion
+    due_on TEXT,  -- a review: the day it became due, YYYY-MM-DD
+    created_at TEXT NOT NULL
+);
+
+-- One row per loop-mode cycle: every problem of the pool once, in an order shuffled when the
+-- cycle began and kept, so a restart neither reshuffles nor resets it. The open cycle is the
+-- one without `ended`; a cycle's progress is its exercises in leetcode_schedule.
+CREATE TABLE IF NOT EXISTS leetcode_cycles (
+    id INTEGER PRIMARY KEY,
+    number INTEGER NOT NULL,  -- 1 for the first cycle ever, counting on across source changes
+    sources TEXT NOT NULL,  -- the source IDs whose problems it holds, as a JSON list
+    problems TEXT NOT NULL,  -- the problem IDs in the order they are assigned, as a JSON list
+    started_at TEXT NOT NULL,
+    ended TEXT,  -- 'completed', or 'sources_changed' if the selection changed before it was
+    ended_at TEXT
+);
+
+-- A fresh coverage pass, asked for by the user. Exercises up to and including after_assignment_id
+-- belong to earlier passes; the newest row is the pass in force, and with none every exercise is
+-- in the first. Nothing else is changed by starting a pass.
+CREATE TABLE IF NOT EXISTS leetcode_coverage_passes (
+    id INTEGER PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    after_assignment_id INTEGER NOT NULL
 );
 """
 
@@ -587,6 +623,104 @@ def mark_leetcode(
             "UPDATE leetcode_progress SET solved_at = COALESCE(solved_at, ?) WHERE problem_id = ?", (stamp, problem_id)
         )
     conn.execute("UPDATE leetcode_progress SET updated_at = ? WHERE problem_id = ?", (stamp, problem_id))
+
+
+# --- practice modes (practice.py decides; this only stores and reads)
+
+
+class Scheduled(NamedTuple):
+    """One exercise as the practice modes see it: its problem, how it ended and why it was chosen."""
+
+    id: int
+    problem_id: str
+    outcome: str | None
+    closed_at: str | None
+    mode: str | None  # None for an exercise from before practice modes
+    sources: tuple[str, ...] | None  # the sources selected when it was chosen
+    encounter: str | None
+    cycle_id: int | None
+    review_number: int | None
+    due_on: str | None
+
+
+class Cycle(NamedTuple):
+    id: int
+    number: int
+    sources: tuple[str, ...]
+    problems: tuple[str, ...]
+    started_at: str
+    ended: str | None
+    ended_at: str | None
+
+
+def scheduled_history(conn: sqlite3.Connection) -> list[Scheduled]:
+    """Every exercise, oldest first, with its outcome and its schedule row if it has them.
+
+    A read-only connection may be on a database from before outcomes or schedules were kept:
+    it is read as it is, with those parts empty.
+    """
+    if not _has_table(conn, "leetcode_assignments"):
+        return []
+    outcome = "o.outcome, o.closed_at" if _has_table(conn, "leetcode_outcomes") else "NULL, NULL"
+    joins = " LEFT JOIN leetcode_outcomes o ON o.assignment_id = a.id" if _has_table(conn, "leetcode_outcomes") else ""
+    schedule = "s.mode, s.sources, s.encounter, s.cycle_id, s.review_number, s.due_on"
+    if _has_table(conn, "leetcode_schedule"):
+        joins += " LEFT JOIN leetcode_schedule s ON s.assignment_id = a.id"
+    else:
+        schedule = "NULL, NULL, NULL, NULL, NULL, NULL"
+    rows = conn.execute(f"SELECT a.id, a.problem_id, {outcome}, {schedule} FROM leetcode_assignments a{joins} ORDER BY a.id")
+    return [Scheduled._make((*row[:5], tuple(json.loads(row[5])) if row[5] else None, *row[6:])) for row in rows]
+
+
+def record_schedule(
+    conn: sqlite3.Connection, assignment_id: int, mode: str, sources: tuple[str, ...], encounter: str,
+    cycle_id: int | None, review_number: int | None, due_on: str | None, now: datetime,
+) -> None:  # fmt: skip
+    conn.execute(
+        "INSERT INTO leetcode_schedule (assignment_id, mode, sources, encounter, cycle_id, review_number, due_on, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (assignment_id, mode, json.dumps(list(sources)), encounter, cycle_id, review_number, due_on, now.isoformat()),
+    )
+
+
+def _cycle(row: tuple) -> Cycle:
+    return Cycle(row[0], row[1], tuple(json.loads(row[2])), tuple(json.loads(row[3])), *row[4:])
+
+
+def cycles(conn: sqlite3.Connection) -> list[Cycle]:
+    """Every loop-mode cycle, oldest first."""
+    if not _has_table(conn, "leetcode_cycles"):
+        return []
+    rows = conn.execute("SELECT id, number, sources, problems, started_at, ended, ended_at FROM leetcode_cycles ORDER BY id")
+    return [_cycle(row) for row in rows]
+
+
+def start_cycle(conn: sqlite3.Connection, number: int, sources: tuple[str, ...], problems: list[str], now: datetime) -> Cycle:
+    cursor = conn.execute(
+        "INSERT INTO leetcode_cycles (number, sources, problems, started_at) VALUES (?, ?, ?, ?)",
+        (number, json.dumps(list(sources)), json.dumps(problems), now.isoformat()),
+    )
+    return Cycle(cursor.lastrowid, number, tuple(sources), tuple(problems), now.isoformat(), None, None)
+
+
+def end_cycle(conn: sqlite3.Connection, cycle_id: int, ended: str, now: datetime) -> None:
+    conn.execute(
+        "UPDATE leetcode_cycles SET ended = ?, ended_at = ? WHERE id = ? AND ended IS NULL", (ended, now.isoformat(), cycle_id)
+    )
+
+
+def coverage_passes(conn: sqlite3.Connection) -> list[tuple[str, int]]:
+    """Every fresh coverage pass started, oldest first, as (started at, after assignment ID)."""
+    if not _has_table(conn, "leetcode_coverage_passes"):
+        return []
+    return conn.execute("SELECT started_at, after_assignment_id FROM leetcode_coverage_passes ORDER BY id").fetchall()
+
+
+def start_coverage_pass(conn: sqlite3.Connection, after_assignment_id: int, now: datetime) -> None:
+    conn.execute(
+        "INSERT INTO leetcode_coverage_passes (started_at, after_assignment_id) VALUES (?, ?)",
+        (now.isoformat(), after_assignment_id),
+    )
 
 
 def read_only(path: Path) -> sqlite3.Connection | None:

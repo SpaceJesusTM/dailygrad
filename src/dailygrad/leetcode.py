@@ -2,7 +2,8 @@
 
 An exercise is not a day. Once assigned it is the current exercise, and each day's digest shows
 it again, until the user says they have completed it or asks to move on. Only then is the next
-one chosen, so the rotation of tracks follows the user's pace and not the calendar.
+one chosen, by the practice mode from the selected sources (practice.py), so practice follows
+the user's pace and not the calendar.
 
 The problem, its example and its constraints are printed from the catalog as written, so the
 model cannot change the question, and it never chooses one. The model's single job here is to
@@ -18,9 +19,9 @@ import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from dailygrad import db, llm
+from dailygrad import db, llm, practice
 from dailygrad.config import Config
-from dailygrad.leetcode_catalog import Catalog, gives_away, load_catalog, next_problem, track_for_day
+from dailygrad.leetcode_catalog import Catalog, gives_away, load_catalog
 from dailygrad.models import Exercise, Problem
 from dailygrad.output import write_atomic
 
@@ -30,9 +31,6 @@ PREFERENCES_VERSION = 1
 HINT_TEMPERATURE = 0.0  # a hint restates an approved one, so take the model's most likely wording
 MIN_HINT_CHARS = 20
 MAX_HINT_CHARS = 240  # one sentence fits easily; more means the model started explaining
-# Which problem a review day prefers among those shown equally often: lower comes first.
-REVIEW_RANKS = {"needs-review": 0, None: 1, "comfortable": 2}
-SOLVED_RANK = 3
 
 HINT_SYSTEM = """\
 You word the hint for a daily coding-interview exercise. The reader is practising how to choose \
@@ -57,25 +55,33 @@ HINT_SCHEMA = {
 }
 
 
-def daily_exercise(conn, day: date, config: Config) -> Exercise | None:
-    """The exercise a digest for `day` shows.
+def daily_exercise(conn, day: date, config: Config, now: datetime | None = None) -> Exercise | practice.Waiting | None:
+    """The exercise a digest for `day` shows, or why there is none.
 
     That is the one a run already showed that day, whatever has happened to it since; else the
-    current exercise, while the user has neither completed nor skipped it; else the next of the
-    track whose turn it is. Showing an exercise again costs no model request: its hint was
-    written the first time.
+    current exercise, while the user has neither completed nor skipped it; else the one the
+    practice mode chooses next. When the mode has nothing to give (coverage complete, no review
+    due), the result is a practice.Waiting, which the digest reports without being degraded.
+    Showing an exercise again costs no model request: its hint was written the first time.
 
     Returns None if it cannot be prepared. That must never cost the digest its news or its
-    lesson, so every failure is caught here and logged; nothing is recorded, and the next run
-    tries again with the same problem.
+    lesson, so every failure is caught here and logged; no exercise is recorded, and the next
+    run tries again. (In loop mode a new cycle may have been begun: that is not an exercise,
+    and the next run continues it rather than reshuffling.)
     """
+    now = now or datetime.now(timezone.utc)
     try:
         catalog = load_catalog()
-        exercise = (
-            restore(catalog, db.leetcode_on(conn, day))
-            or restore(catalog, db.active_leetcode(conn))
-            or assign(catalog, conn, config.leetcode.rotation)
-        )
+        current = practice.settings(config)  # an unusable settings file raises: nothing is guessed
+        exercise = restore(catalog, db.leetcode_on(conn, day)) or restore(catalog, db.active_leetcode(conn))
+        if exercise is None:
+            chosen = choose(conn, catalog, current, day, now)
+            if isinstance(chosen, practice.Waiting):
+                log.info("no LeetCode exercise to assign: %s", chosen.state)
+                return chosen
+            exercise = from_choice(catalog, chosen, current)
+        else:
+            exercise.practice = practice.describe(catalog, practice.snapshot(conn), exercise.assignment_id, current)
         place(exercise, db.leetcode_days(conn, exercise.assignment_id) if exercise.assignment_id else [], day)
         exercise.hints_on = hints_enabled(config)
         if exercise.hints_on and not exercise.hint:  # written once: every later showing has it already
@@ -84,6 +90,32 @@ def daily_exercise(conn, day: date, config: Config) -> Exercise | None:
     except Exception:
         log.exception("could not prepare the LeetCode exercise")
         return None
+
+
+def choose(conn, catalog: Catalog, current: practice.Settings, day: date, now: datetime) -> practice.Choice | practice.Waiting:
+    """The next exercise under the settings, recording nothing but, in loop mode, a cycle it needs to begin."""
+    if current.mode != "loop":
+        return practice.choose(catalog, current, practice.snapshot(conn), day)
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")  # two processes must not both begin a cycle
+        return practice.next_exercise(conn, catalog, current, day, now)
+
+
+def from_choice(catalog: Catalog, choice: practice.Choice, current: practice.Settings) -> Exercise:
+    """A newly chosen exercise, not yet recorded: `record` saves it with its schedule."""
+    problem = choice.problem
+    return Exercise(
+        problem, choice.track, catalog.sources_of(problem), choice.encounter != "first",
+        practice=practice.choice_document(choice, current), choice=choice,
+    )  # fmt: skip
+
+
+def record(conn, run_id: int, exercise: Exercise, model: str, now: datetime) -> int:
+    """Save a newly chosen exercise and why it was chosen. This is what moves practice on."""
+    assignment_id = db.record_leetcode(conn, run_id, exercise, model, now)
+    if exercise.choice is not None:
+        practice.record(conn, assignment_id, exercise.choice, now)
+    return assignment_id
 
 
 def place(exercise: Exercise, shown_days: list[str], day: date | None = None) -> None:
@@ -97,53 +129,86 @@ def place(exercise: Exercise, shown_days: list[str], day: date | None = None) ->
     exercise.day = len(days)
 
 
-def settle(conn, exercise: Exercise) -> Exercise:
+def settle(conn, exercise: Exercise, config: Config, day: date, now: datetime) -> Exercise | practice.Waiting:
     """The exercise a run records, decided once the run's transaction holds the write lock.
 
     A run chooses its exercise before the minutes of model work, and `dailygrad leetcode mark
-    complete` and `next` may be used meanwhile. What they did stands. An exercise the run
-    restored has the outcome it has now. An exercise the run chose itself gives way to one that
-    `next` assigned in the meantime: the user was shown that one, and recording both would spend
-    two turns of the rotation on one request. Choosing is deterministic, so it is normally the
-    same problem and only its row is adopted; otherwise the digest shows the user's, with the
-    catalog's hint.
+    complete`, `next` and `practice set` may be used meanwhile. What they did stands. An
+    exercise the run restored has the outcome it has now. An exercise the run chose itself
+    gives way to one that `next` assigned in the meantime: the user was shown that one, and
+    recording both would spend two exercises on one request. Otherwise the choice is made again
+    under the lock, so settings changed during the run apply. Choosing is deterministic, so it
+    is normally the same problem and keeps its hint; otherwise the digest shows the new choice
+    with the catalog's hint, or says there is nothing to assign.
     """
     if exercise.assignment_id is not None:
         saved = db.leetcode_by_id(conn, exercise.assignment_id)
         exercise.outcome = saved.outcome if saved else exercise.outcome
         return exercise
-    active = restore(load_catalog(), db.active_leetcode(conn))
-    if active is None:
+    catalog = load_catalog()
+    try:
+        current = practice.settings(config)
+    except practice.PracticeError:
+        current = None  # damaged during the run: the run's own choice stands
+    active = restore(catalog, db.active_leetcode(conn))
+    if active is not None:
+        active.practice = practice.describe(catalog, practice.snapshot(conn), active.assignment_id, current)
+        if active.problem.id == exercise.problem.id:
+            exercise.assignment_id, exercise.practice = active.assignment_id, active.practice
+            return exercise
+        log.warning("another exercise was assigned during the run: showing %s, not %s", active.problem.id, exercise.problem.id)
+        return _instead(active, exercise)
+    if current is None:
         return exercise
-    if active.problem.id == exercise.problem.id:
-        exercise.assignment_id = active.assignment_id
+    chosen = practice.next_exercise(conn, catalog, current, day, now)  # this transaction holds the write lock
+    if isinstance(chosen, practice.Waiting):
+        log.warning("the practice settings changed during the run: there is no exercise to assign now")
+        return chosen
+    if chosen.problem.id == exercise.problem.id:
+        exercise.choice, exercise.practice = chosen, practice.choice_document(chosen, current)
+        exercise.track, exercise.review = chosen.track, chosen.encounter != "first"
         return exercise
-    log.warning("another exercise was assigned during the run: showing %s, not %s", active.problem.id, exercise.problem.id)
-    active.hints_on, active.assigned_on, active.day = exercise.hints_on, exercise.assigned_on, exercise.day
-    if active.hints_on and not active.hint:
-        active.hint, active.hint_source = active.problem.hints[0], "catalog"
-    return active
+    log.warning("the practice settings changed during the run: showing %s, not %s", chosen.problem.id, exercise.problem.id)
+    return _instead(from_choice(catalog, chosen, current), exercise)
 
 
-def assign(catalog: Catalog, conn, rotation: list[str]) -> Exercise:
-    """Choose the next exercise from the history alone. Nothing is recorded here.
+def record_showing(
+    conn, run_id: int, chosen: Exercise | practice.Waiting | None, config: Config, day: date, now: datetime
+) -> Exercise | practice.Waiting | None:  # fmt: skip
+    """Make a run's choice final and record that its digest shows it. Call it in the run's write transaction.
 
-    The history holds each exercise once, however many days it was shown, so the track whose
-    turn it is depends only on how many exercises there have been.
+    A new exercise is recorded here, and that is what moves practice on; one shown again only
+    gains a showing, and its hint if this run wrote the first. Returns what the digest shows.
     """
-    shown = db.leetcode_history(conn)
-    track = track_for_day(rotation, len(shown))
-    problem, review = next_problem(catalog.track(track), shown, review_ranks(db.leetcode_progress(conn)))
-    log.info("LeetCode exercise %d: %s (%s%s)", len(shown) + 1, problem.id, track, ", review" if review else "")
-    return Exercise(problem, track, catalog.sources_of(problem), review)
+    if not isinstance(chosen, Exercise):
+        return chosen
+    exercise = settle(conn, chosen, config, day, now)
+    if isinstance(exercise, practice.Waiting):
+        return exercise
+    if exercise.assignment_id is None:
+        exercise.assignment_id = record(conn, run_id, exercise, config.ollama.model, now)
+    elif exercise.hint:  # a run that wrote the exercise's hint: hints were off before
+        db.save_leetcode_hint(conn, exercise.assignment_id, exercise.hint, exercise.hint_source)
+    db.record_leetcode_showing(conn, run_id, exercise.assignment_id, now)
+    return exercise
 
 
-def review_ranks(progress: dict[str, tuple[str | None, str | None, str | None]]) -> dict[str, int]:
-    """How much each problem needs a review, from what the user has said of it: lower needs it more."""
-    return {
-        problem_id: SOLVED_RANK if solved_at else REVIEW_RANKS.get(confidence, 1)
-        for problem_id, (_, confidence, solved_at) in progress.items()
-    }
+def _instead(replacement: Exercise, chosen: Exercise) -> Exercise:
+    """The exercise a run shows in place of the one it chose, placed as that one was, with the catalog's hint."""
+    replacement.hints_on, replacement.assigned_on, replacement.day = chosen.hints_on, chosen.assigned_on, chosen.day
+    if replacement.hints_on and not replacement.hint:
+        replacement.hint, replacement.hint_source = replacement.problem.hints[0], "catalog"
+    return replacement
+
+
+def practice_status(config: Config, waiting: practice.Waiting | None) -> dict | None:
+    """The digest's `leetcode_practice`: the settings in force and, if nothing was assigned, why. None if unknown."""
+    try:
+        current = practice.settings(config)
+        return practice.status_document(load_catalog(), current, waiting)
+    except Exception:
+        log.exception("could not describe the LeetCode practice settings")
+        return None
 
 
 def restore(catalog: Catalog, saved: db.Assigned | None) -> Exercise | None:

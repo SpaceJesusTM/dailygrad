@@ -30,11 +30,13 @@ def digest_document(
     sources: list[dict],
     exercise: Exercise | None = None,
     leetcode_failed: bool = False,
+    practice: dict | None = None,
 ) -> dict:
     """The digest as plain data, for the JSON files. Every key is always present; a missing value is null.
 
-    `exercise` is None when LeetCode exercises are switched off, and also when one was due and
-    could not be prepared: `leetcode_failed` tells the two apart, and makes the run degraded.
+    `exercise` is None when LeetCode exercises are switched off, when one was due and could not
+    be prepared, and when the practice mode had none to give. `leetcode_failed` marks the second,
+    and makes the run degraded; `practice` (practice.status_document) says why in the third.
     """
     degraded = lesson is None or leetcode_failed or any(story.model_failed for story in stories)
     return {
@@ -50,6 +52,8 @@ def digest_document(
         "lesson": _lesson(lesson),
         "recall": _recall(lesson),
         "leetcode": leetcode_document(exercise),
+        # The practice settings in force, and why there is no exercise when the mode had none to give.
+        "leetcode_practice": practice,
         "repair": None,  # a run's own digest; a repaired revision of it says what was repaired (repair.py)
     }
 
@@ -132,8 +136,8 @@ def leetcode_document(exercise: Exercise | None, with_reference: bool = True) ->
         "url": problem.url,
         "difficulty": problem.difficulty,
         "premium": problem.premium,
-        "track": exercise.track,  # the track whose turn it was
-        "review": exercise.review,
+        "track": exercise.track,  # the selected source it was drawn from
+        "review": exercise.review,  # the problem had been assigned before: a repeat or a review
         "sources": [
             {"id": source.id, "name": source.name, "kind": source.kind, "publisher": source.publisher}
             for source in exercise.sources
@@ -153,6 +157,8 @@ def leetcode_document(exercise: Exercise | None, with_reference: bool = True) ->
         "day": exercise.day,  # how many days it has been shown, this one included
         "is_carryover": exercise.day > 1,  # shown on an earlier day too: not a newly assigned exercise
         "awaiting_completion": exercise.outcome is None,  # false once completed or skipped
+        # Why it was chosen: practice mode, first encounter or not, loop cycle, learning review. Null before practice modes.
+        "practice": exercise.practice,
     }
     if with_reference:
         document["reference_solution"] = reference_solution(problem)  # the answer: never to be displayed unasked

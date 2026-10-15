@@ -130,7 +130,8 @@ The digest is printed and saved under `data/`. No configuration is needed.
 5. **Summarise** each story from that text alone: what happened, and why it matters.
 6. **Teach.** The next curriculum topic is turned into a two- or three-sentence lesson.
 7. **Set the exercise.** The day's LeetCode problem comes from a built-in catalog, chosen
-   without the model. The model only words its one hint.
+   without the model from the question sources and practice mode you picked. The model only
+   words its one hint.
 8. **Write** the outputs, record history, and unload the model.
 
 The model is used only where judgement is needed, on a short list, and it never sees more
@@ -280,8 +281,9 @@ site for it.
 | Vanguard | 32 | [Interview Solver](https://interviewsolver.com/interview-questions/vanguard)'s Vanguard page |
 
 Seventeen listings overlap, so the three lists hold 182 different problems. A problem on
-several lists is one catalog entry that belongs to each of those tracks. The counts are what
-the lists held on the snapshot date, 2026-10-09.
+several lists is one catalog entry that belongs to each of those lists. The counts are what
+the lists held on the snapshot date, 2026-10-09; `dailygrad leetcode practice` lists the
+sources and their counts as the installed catalog has them.
 
 The company lists are a third party's tags, and a digest credits them as such: "AMD
 (Interview Solver tag)". They are not LeetCode's own company tags, and Interview Solver's
@@ -290,25 +292,46 @@ interview.
 
 An exercise is yours until you end it. Each day's digest shows the current exercise again,
 marked "Still in progress", until you say you are finished with it or ask to move on (see
-[Finishing an exercise](#finishing-an-exercise)). Only then is the next one chosen, and
-which one that is, is deterministic:
-
-- The tracks take turns, one exercise each: NeetCode 150, AMD, Vanguard, and round again.
-  An exercise takes one turn however many days it is shown, and a day without a run skips
-  nothing.
-- Each track goes through its own problems: the easy ones first, then medium, then hard, and
-  within each difficulty topic by topic, from arrays and hashing to bit manipulation.
-- A problem that another track has already shown is passed over while the track has new ones.
-- When a track has nothing new left, its turn is a review instead of being dropped: the
-  problem assigned least often, with those you marked `needs-review` first. Nothing is
-  deleted to make that possible. A review is a new exercise: having completed the problem
-  before does not finish it.
-- Running again on the same day shows that day's exercise again, even if you have ended it
-  since.
+[Finishing an exercise](#finishing-an-exercise)). Only then is the next one chosen, without
+the model, from the [sources and mode you choose](#question-sources-and-practice-modes).
+Running again on the same day shows that day's exercise again, even if you have ended it
+since.
 
 The statement, the example and the constraints are printed from the catalog as written, so
 the model cannot change the question. The topic is not shown, because naming it names the
 technique.
+
+### Question sources and practice modes
+
+Choose which lists to practise from, in any combination, and how the next exercise is
+chosen. The selected lists make one pool, in which a problem two lists share appears once.
+
+| Mode | The next exercise | When the pool runs out |
+|---|---|---|
+| `coverage` (default) | The pool's next problem not yet assigned in this pass: easy first, topic by topic | "AMD coverage complete." Nothing repeats until you start a fresh pass |
+| `loop` | The next problem of the current cycle, in an order shuffled for that cycle | A new cycle begins, reshuffled, and so on until you change the mode |
+| `learning` | A review that has fallen due (the longest due first); else a problem never completed | "No reviews due. Next review: October 22." until one is |
+
+In learning mode a completed problem comes back `review_interval_days` after its latest
+completion, up to `max_reviews` times (or without limit), counted in calendar days where you
+live. Skipping is never counted as completing: a skipped problem is set aside for one
+interval, so it cannot come straight back.
+
+```sh
+dailygrad leetcode practice                                        # sources, mode and progress in each mode
+dailygrad leetcode practice set --sources amd                      # AMD questions only
+dailygrad leetcode practice set --sources amd neetcode-150 --mode loop
+dailygrad leetcode practice set --mode learning --interval 7 --max-reviews 3
+dailygrad leetcode practice set --sources all --mode learning --interval 3 --max-reviews unlimited
+dailygrad leetcode practice restart-coverage                       # what a fresh pass would do; add --confirm to begin one
+dailygrad leetcode practice reset                                  # back to the config file's settings
+```
+
+A change applies when the next exercise is chosen: the one in progress stays until you
+complete or skip it. Nothing in the history is ever changed or deleted. The choices are kept
+in `data/leetcode_practice.json`, which survives updates and overrides `[leetcode]` in the
+config file. [`docs/leetcode.md`](docs/leetcode.md#question-sources-and-practice-modes)
+describes every rule and the JSON of each command.
 
 ### Hints
 
@@ -348,14 +371,14 @@ correct answer, not reading the reference approach, not a mark.
   today's stays as it is, and tomorrow's shows the new exercise.
 
 Completed and skipped are counted separately, and neither is "solved in code". Each moves
-the rotation on by exactly one exercise. With `--exercise ID` (the number `dailygrad
+practice on by exactly one exercise. With `--exercise ID` (the number `dailygrad
 leetcode` shows) either command acts only if that is still the current exercise, so a
 repeated or late request cannot end a different one.
 
 ### Following up
 
 ```sh
-dailygrad leetcode                    # the current exercise, the rotation and your progress
+dailygrad leetcode                    # the current exercise, the practice settings and your progress
 dailygrad leetcode hint               # the next hint, a step firmer than the last
 dailygrad leetcode answer             # feedback on your approach, read from standard input
 dailygrad leetcode review             # the reference approach and its complexity
@@ -392,7 +415,7 @@ exercise does not mark its problem solved.
 
 Every command takes `--json` for another program, and `hint`, `answer`, `review` and `mark`
 take `--problem ID` to follow up on an earlier exercise. None of them writes a digest, and
-only `next` chooses a problem or moves the rotation.
+only `next` chooses a problem or moves practice on.
 After a reply the model stays loaded for five minutes, so that a follow-up is quick, and
 Ollama then frees it; `keep_alive_seconds = 0` frees it at once.
 [`docs/leetcode.md`](docs/leetcode.md) has the catalog, the JSON of each command and what an
@@ -412,6 +435,7 @@ assistant needs to relay answers.
 | `data/dailygrad.db` | SQLite history, used to avoid repeats and to track the curriculum. |
 | `data/source_preferences.json` | Which sources are switched off. Written by `dailygrad sources`, not by a run. |
 | `data/leetcode_preferences.json` | Whether digests show a hint. Written by `dailygrad leetcode hints`, not by a run. |
+| `data/leetcode_practice.json` | The question sources and practice mode chosen with `dailygrad leetcode practice set`. Not written by a run. |
 
 The JSON carries a run ID, the run status, the stories with their summaries, the sources
 the run used, the lesson, the recall question and the LeetCode exercise, so another program can use a digest without parsing Markdown or reading
@@ -541,20 +565,27 @@ Ollama model:       qwen3.5:4b-q4_K_M
 Stories per digest: 5, chosen from up to 25 candidates
 Sources:            OpenAI, Google DeepMind, Google Research, Anthropic News, Meta AI Research, NVIDIA Developer Blog, Mistral AI News, Microsoft Research, Hugging Face Blog, Hugging Face Daily Papers, Hacker News
 Source preferences: /home/you/dailygrad/data/source_preferences.json
-LeetCode:           one exercise at a time, kept until completed or skipped, rotating neetcode-150 -> amd -> vanguard; hints on
+LeetCode:           one exercise at a time, kept until completed or skipped; coverage practice from neetcode-150 + amd + vanguard; hints on
 LeetCode settings:  /home/you/dailygrad/data/leetcode_preferences.json
+LeetCode practice:  /home/you/dailygrad/data/leetcode_practice.json
 ```
 
 `Sources` lists the sources that are switched on.
 
 The LeetCode exercise has its own section, `[leetcode]`. To leave it out of the digest, or to
-change which tracks take turns:
+set the default sources and practice mode (which `dailygrad leetcode practice set` overrides):
 
 ```toml
 [leetcode]
 enabled = true
-rotation = ["neetcode-150", "amd", "vanguard"]
+sources = ["neetcode-150", "amd", "vanguard"]
+mode = "coverage"            # or "loop" or "learning"
+review_interval_days = 7     # learning mode
+max_reviews = 3              # learning mode; "unlimited" for no limit
 ```
+
+A config file from before practice modes may say `rotation = [...]` instead of `sources`; it
+still works, and its tracks are the sources.
 
 `dailygrad.toml` and `data/` are ignored by Git.
 

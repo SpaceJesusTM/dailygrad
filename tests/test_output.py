@@ -16,7 +16,7 @@ DAY = date(2026, 10, 7)
 GENERATED = datetime(2026, 10, 7, 12, 30, 15, 123456, tzinfo=timezone.utc)
 TOPIC = Topic("tf-masking", "architectures", "Transformers", 5, "Causal and padding masks", ("a", "b", "c"), "What does the causal mask do?")
 OLDER = Topic("nn-backprop", "foundations", "Backpropagation", 1, "Backpropagation", ("a", "b", "c"), "Why is reverse mode efficient?")
-KEYS = ["schema_version", "run_id", "date", "generated_at", "status", "model", "stories", "failed_sources", "sources", "lesson", "recall", "leetcode", "repair"]
+KEYS = ["schema_version", "run_id", "date", "generated_at", "status", "model", "stories", "failed_sources", "sources", "lesson", "recall", "leetcode", "leetcode_practice", "repair"]
 SOURCES = [{"id": "hacker-news", "name": "Hacker News", "group": "community", "enabled": True}]
 STORY_KEYS = ["id", "title", "source", "url", "what_happened", "why_it_matters", "evidence", "model_failed"]
 

@@ -4,7 +4,7 @@
 import logging
 from datetime import datetime, timezone
 
-from dailygrad import db, leetcode, llm, preferences
+from dailygrad import db, leetcode, llm, practice, preferences
 from dailygrad.config import Config
 from dailygrad.curriculum import load_curriculum
 from dailygrad.filtering import build_shortlist
@@ -28,6 +28,8 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
     The curriculum advances once per calendar day: a rerun on the same day shows that day's
     lesson again instead of generating the next one. The LeetCode exercise advances with the
     user, not the calendar: the current one is shown each day until they complete or skip it.
+    A practice mode with nothing to assign (coverage complete, no review due) is reported in the
+    digest and is not a failure.
     """
     llm.begin_run(config.run_budget_seconds)  # the budget covers fetching too, so it bounds the whole run
     now = now or datetime.now(timezone.utc)
@@ -55,10 +57,11 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
             if lesson_is_new:
                 lesson = build_lesson(topics, db.lesson_history(conn), db.recall_history(conn), config.ollama)
             if config.leetcode.enabled:  # last, and it never raises: it cannot cost the news or the lesson
-                exercise = leetcode.daily_exercise(conn, today, config)
+                exercise = leetcode.daily_exercise(conn, today, config, now)
         finally:
             llm.unload(config.ollama)  # free the model's memory even if generation raised
         leetcode_failed = config.leetcode.enabled and exercise is None
+        waiting = None
         digest_path = dated_markdown_path(config, today)
 
         # One transaction. The files are written last, because they carry the run's id: if
@@ -72,17 +75,15 @@ def run(config: Config, now: datetime | None = None) -> tuple[str, bool]:
             db.record_summaries(conn, run_id, stories, config.ollama.model, now)
             if lesson and lesson_is_new:  # recording a lesson is what advances the curriculum
                 db.record_lesson(conn, run_id, lesson, config.ollama.model, now)
-            if exercise:
-                exercise = leetcode.settle(conn, exercise)  # this connection holds the write lock by now
-                if exercise.assignment_id is None:  # a new exercise: recording it is what advances the rotation
-                    exercise.assignment_id = db.record_leetcode(conn, run_id, exercise, config.ollama.model, now)
-                elif exercise.hint:  # a run that wrote the exercise's hint: hints were off before
-                    db.save_leetcode_hint(conn, exercise.assignment_id, exercise.hint, exercise.hint_source)
-                db.record_leetcode_showing(conn, run_id, exercise.assignment_id, now)
-            digest = render_digest(today, stories, failed_sources, lesson, exercise, leetcode_failed)
+            # This connection holds the write lock by now, so the choice is made final here.
+            exercise = leetcode.record_showing(conn, run_id, exercise, config, today, now)
+            if isinstance(exercise, practice.Waiting):
+                waiting, exercise = exercise, None
+            status = leetcode.practice_status(config, waiting) if config.leetcode.enabled and not leetcode_failed else None
+            digest = render_digest(today, stories, failed_sources, lesson, exercise, leetcode_failed, status)
             document = digest_document(
                 run_id, today, now, config.ollama.model, stories, failed_sources, lesson,
-                preferences.snapshot(sources, disabled), exercise, leetcode_failed,
+                preferences.snapshot(sources, disabled), exercise, leetcode_failed, status,
             )  # fmt: skip
             write_outputs(config, today, digest, document)
     finally:

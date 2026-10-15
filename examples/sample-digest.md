@@ -54,6 +54,8 @@ A linear layer maps input (..., d\_in) to output (..., d\_out) by acting only on
 
 _Easy · Source: NeetCode 150_
 
+_Coverage practice · first encounter_
+
 Given an integer array, decide whether any value appears more than once.
 
 **Example:**

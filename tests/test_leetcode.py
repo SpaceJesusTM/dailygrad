@@ -19,13 +19,16 @@ from test_pipeline import FEED, SCHEDULE, FakeModel, day, fake_articles, fake_we
 
 CATALOG = load_catalog()
 NEETCODE, AMD, VANGUARD = (CATALOG.track(track) for track in ("neetcode-150", "amd", "vanguard"))
+POOL = CATALOG.pool(("neetcode-150", "amd", "vanguard"))  # the default selection, in coverage order
 FIRST = NEETCODE[0]  # contains-duplicate
+assert POOL[0] == FIRST
 MODEL_HINT = "Consider what you would want to keep in mind about the values you have already passed."
 EARLIER_KEYS = ["schema_version", "run_id", "date", "generated_at", "status", "model", "stories", "failed_sources", "sources", "lesson", "recall"]
+FIRST_PRACTICE = {"mode": "coverage", "sources": ["neetcode-150", "amd", "vanguard"], "encounter": "first", "cycle": None, "review": None}
 PUBLIC_KEYS = [
     "problem_id", "number", "title", "url", "difficulty", "premium", "track", "review", "sources", "company_tags",
     "statement", "example", "constraints", "prompts", "hints_enabled", "hint", "hint_source",
-    "exercise_id", "assigned_on", "day", "is_carryover", "awaiting_completion",
+    "exercise_id", "assigned_on", "day", "is_carryover", "awaiting_completion", "practice",
 ]  # fmt: skip
 DOCUMENT_KEYS = [*PUBLIC_KEYS, "reference_solution"]  # what a digest shows, then the answer for a program that tutors
 REFERENCE_KEYS = ["source", "complete", "topic", "approach", "time", "space", "edge_cases"]
@@ -127,6 +130,7 @@ def test_the_json_document_gains_a_leetcode_field(config, fake_web, model, fake_
         "day": 1,
         "is_carryover": False,
         "awaiting_completion": True,
+        "practice": FIRST_PRACTICE,
         "reference_solution": {
             "source": "catalog",
             "complete": True,
@@ -149,7 +153,8 @@ def test_the_reference_answer_is_only_in_the_json_key_made_for_it(config, fake_w
         shown = digest + json.dumps(document | {"leetcode": exercise}, ensure_ascii=False)  # all but that one key
 
         assert list(document["leetcode"]) == DOCUMENT_KEYS and list(exercise) == PUBLIC_KEYS
-        assert problem.approach not in shown and not any(case in shown for case in problem.edge_cases)
+        stated = " ".join([problem.statement, *problem.constraints])  # an edge case the task itself spells out reveals nothing
+        assert problem.approach not in shown and not any(case in shown for case in problem.edge_cases if case not in stated)
         assert f"Time: {problem.time}" not in shown and CATEGORIES[problem.category] not in shown
         assert problem.category not in json.dumps(exercise)
         assert (reference["approach"], reference["time"], reference["space"]) == (problem.approach, problem.time, problem.space)
@@ -195,24 +200,18 @@ def test_a_rerun_carries_the_same_reference_answer(config, fake_web, model, fake
     assert read_latest(config)["leetcode"]["reference_solution"] == first
 
 
-def test_completed_exercises_rotate_through_neetcode_amd_and_vanguard(config, fake_web, model, fake_articles):
+def test_completed_exercises_cover_the_selected_sources_in_the_pools_order(config, fake_web, model, fake_articles):
     practise(config, 7)
 
-    assert [(problem, track) for problem, track, _, _, _ in assignments(config)] == [
-        (NEETCODE[0].id, "neetcode-150"),
-        (AMD[0].id, "amd"),  # two-sum, which NeetCode 150 also lists
-        (VANGUARD[0].id, "vanguard"),
-        (NEETCODE[1].id, "neetcode-150"),
-        (AMD[1].id, "amd"),
-        (VANGUARD[1].id, "vanguard"),
-        (NEETCODE[3].id, "neetcode-150"),  # NEETCODE[2] is two-sum: already shown on AMD's turn
-    ]
-    assert NEETCODE[2].id == AMD[0].id == "two-sum"
+    expected = [(problem.id, next(track for track in ("neetcode-150", "amd", "vanguard") if track in problem.tracks))
+                for problem in POOL[:7]]  # fmt: skip
+    assert [(problem, track) for problem, track, _, _, _ in assignments(config)] == expected
+    assert len({problem for problem, _ in expected}) == 7  # a problem two lists hold comes once
 
 
 def test_a_company_exercise_credits_the_tag_to_the_third_party(config, fake_web, model, fake_articles):
-    practise(config, 1)
-    digest, _ = pipeline.run(config, now=day(1))
+    config.leetcode.sources = ["amd"]
+    digest, _ = pipeline.run(config, now=day(0))
 
     exercise = read_latest(config)["leetcode"]
     assert (exercise["problem_id"], exercise["track"]) == ("two-sum", "amd")
@@ -220,8 +219,9 @@ def test_a_company_exercise_credits_the_tag_to_the_third_party(config, fake_web,
     assert exercise["sources"] == [
         {"id": "neetcode-150", "name": "NeetCode 150", "kind": "curriculum", "publisher": "NeetCode"},
         {"id": "amd", "name": "AMD", "kind": "company", "publisher": "Interview Solver"},
-    ]
+    ]  # every list it is on, though only AMD is selected
     assert "_Easy · Source: NeetCode 150, AMD (Interview Solver tag)_" in digest
+    assert "_Coverage practice · first encounter_" in digest
 
 
 def test_a_rerun_on_the_same_day_shows_the_same_exercise_and_asks_the_model_nothing_more(config, fake_web, model, fake_articles):
@@ -237,59 +237,62 @@ def test_a_rerun_on_the_same_day_shows_the_same_exercise_and_asks_the_model_noth
     assert table_count(config, "runs") == 3  # each run is still recorded; only the exercise is reused
 
 
-def test_the_day_after_a_completion_takes_the_next_track(config, fake_web, model, fake_articles):
+def test_the_day_after_a_completion_takes_the_next_problem(config, fake_web, model, fake_articles):
     pipeline.run(config, now=day(0))
     pipeline.run(config, now=day(0))
     tutor.complete(config, now=day(0))
     pipeline.run(config, now=day(1))
 
-    assert [problem for problem, _, _, _, _ in assignments(config)] == [FIRST.id, "two-sum"]
-    assert read_latest(config)["leetcode"]["track"] == "amd"
+    assert [problem for problem, _, _, _, _ in assignments(config)] == [FIRST.id, POOL[1].id]
 
 
-def test_days_without_a_run_neither_skip_a_track_nor_end_the_exercise(config, fake_web, model, fake_articles):
+def test_days_without_a_run_neither_skip_a_problem_nor_end_the_exercise(config, fake_web, model, fake_articles):
     pipeline.run(config, now=day(0))
     pipeline.run(config, now=day(5))  # four days missed: still the first exercise
-    assert [track for _, track, _, _, _ in assignments(config)] == ["neetcode-150"]
+    assert [problem for problem, _, _, _, _ in assignments(config)] == [FIRST.id]
 
     tutor.complete(config, now=day(5))
-    pipeline.run(config, now=day(9))  # three more missed: the next track, not the one after
-    assert [track for _, track, _, _, _ in assignments(config)] == ["neetcode-150", "amd"]
+    pipeline.run(config, now=day(9))  # three more missed: the next problem, not the one after
+    assert [problem for problem, _, _, _, _ in assignments(config)] == [FIRST.id, POOL[1].id]
 
 
 def test_history_survives_a_restart(config, fake_web, model, fake_articles):
     practise(config, 3)
 
     conn = db.connect(config.db_path)  # a fresh connection, as a new process would open
-    assert db.leetcode_history(conn) == [NEETCODE[0].id, AMD[0].id, VANGUARD[0].id]
-    assert db.leetcode_on(conn, day(1).astimezone().date())[1:4] == ("two-sum", "amd", 0)
+    assert db.leetcode_history(conn) == [problem.id for problem in POOL[:3]]
+    assert db.leetcode_on(conn, day(1).astimezone().date())[1] == POOL[1].id
     conn.close()
 
     pipeline.run(config, now=day(3))
-    assert assignments(config)[-1][:2] == (NEETCODE[1].id, "neetcode-150")
+    assert assignments(config)[-1][0] == POOL[3].id
 
 
-def test_a_configured_rotation_is_followed(config, fake_web, model, fake_articles):
-    config.leetcode.rotation = ["vanguard", "amd"]
+def test_the_configured_sources_make_one_pool(config, fake_web, model, fake_articles):
+    config.leetcode.sources = ["vanguard", "amd"]
 
     practise(config, 3)
 
-    assert [(problem, track) for problem, track, _, _, _ in assignments(config)] == [
-        (VANGUARD[0].id, "vanguard"), (AMD[0].id, "amd"), (VANGUARD[1].id, "vanguard"),
-    ]  # fmt: skip
+    pool = CATALOG.pool(("amd", "vanguard"))
+    assert [problem for problem, _, _, _, _ in assignments(config)] == [problem.id for problem in pool[:3]]
+    assert all(track in ("amd", "vanguard") for _, track, _, _, _ in assignments(config))
 
 
-def test_a_track_that_has_run_out_shows_a_review_marked_as_one(config, fake_web, model, fake_articles):
-    config.leetcode.rotation = ["amd"]
+def test_a_source_that_has_been_covered_says_so_instead_of_reviewing(config, fake_web, model, fake_articles):
+    config.leetcode.sources = ["amd"]
     practise(config, len(AMD))
 
-    digest, _ = pipeline.run(config, now=day(len(AMD)))
+    digest, model_ok = pipeline.run(config, now=day(len(AMD)))
 
-    rows = assignments(config)
-    assert [review for _, _, review, _, _ in rows] == [0] * 17 + [1]
-    assert rows[-1][0] == AMD[0].id and len(rows) == 18  # the first problem again; nothing was deleted to allow it
-    assert read_latest(config)["leetcode"]["review"] is True
-    assert "_Review · Easy · Source: NeetCode 150, AMD (Interview Solver tag)_" in digest
+    document = read_latest(config)
+    assert model_ok and document["status"] == "ok"  # nothing failed: there is simply nothing left in this pass
+    assert document["leetcode"] is None and len(assignments(config)) == 17  # nothing was repeated
+    assert document["leetcode_practice"] == {
+        "mode": "coverage", "sources": [{"id": "amd", "name": "AMD"}], "state": "coverage_complete",
+        "message": "AMD coverage complete.", "next_review_on": None,
+    }  # fmt: skip
+    assert "## LeetCode Micro-Lesson\n\n_AMD coverage complete._\n" in digest
+    assert sorted(problem for problem, _, _, _, _ in assignments(config)) == sorted(problem.id for problem in AMD)
 
 
 # --- the hint the model words
@@ -435,7 +438,7 @@ def test_a_run_whose_files_cannot_be_written_does_not_advance_the_rotation(confi
 
     disk["full"] = False
     pipeline.run(config, now=day(1))
-    assert assignments(config)[-1][:2] == ("two-sum", "amd")  # AMD's turn was not lost, and not skipped
+    assert assignments(config)[-1][0] == POOL[1].id  # the next problem was not lost, and not skipped
 
 
 def test_switched_off_there_is_no_section_no_field_value_and_no_history(config, fake_web, model, fake_articles):
@@ -697,7 +700,7 @@ def test_every_earlier_key_keeps_its_place_and_meaning(config, fake_web, model, 
     pipeline.run(config, now=NOW)
 
     document = read_latest(config)
-    assert list(document) == [*EARLIER_KEYS, "leetcode", "repair"]  # keys added at the end; schema version unchanged
+    assert list(document) == [*EARLIER_KEYS, "leetcode", "leetcode_practice", "repair"]  # keys added at the end; schema version unchanged
     assert document["schema_version"] == output.SCHEMA_VERSION == 1
     assert len(document["stories"]) == 3 and document["lesson"]["topic_id"] == SCHEDULE[0].id
     assert document["lesson"]["lesson"] == lesson_text(SCHEDULE[0].title) and document["recall"] is None
@@ -746,29 +749,52 @@ def test_a_database_from_before_the_exercise_gains_the_tables_and_keeps_its_hist
 # --- configuration and the CLI
 
 
-def test_the_default_configuration_is_on_with_the_three_track_rotation():
+def test_the_default_configuration_is_coverage_of_all_three_sources():
     settings = Config().leetcode
 
-    assert settings.enabled and settings.model_hints and settings.rotation == ["neetcode-150", "amd", "vanguard"]
+    assert settings.enabled and settings.model_hints and settings.sources == ["neetcode-150", "amd", "vanguard"]
+    assert (settings.mode, settings.review_interval_days, settings.max_reviews) == ("coverage", 7, 3)
     assert (settings.feedback_budget_seconds, settings.keep_alive_seconds) == (120, 300)
 
 
-def test_the_config_file_can_change_the_rotation_and_switch_the_exercise_off(tmp_path):
+def test_the_config_file_can_set_the_practice_and_switch_the_exercise_off(tmp_path):
     path = tmp_path / "dailygrad.toml"
-    path.write_text('[leetcode]\nenabled = false\nrotation = ["amd", "neetcode-150"]\nmodel_hints = false\nkeep_alive_seconds = 0\n')
+    path.write_text(
+        '[leetcode]\nenabled = false\nsources = ["amd", "neetcode-150", "amd"]\nmode = "learning"\n'
+        'review_interval_days = 3\nmax_reviews = "unlimited"\nmodel_hints = false\nkeep_alive_seconds = 0\n'
+    )
 
     settings = load_config(path).leetcode
 
     assert not settings.enabled and not settings.model_hints and settings.keep_alive_seconds == 0
-    assert settings.rotation == ["amd", "neetcode-150"]
+    assert settings.sources == ["amd", "neetcode-150"]  # each once
+    assert (settings.mode, settings.review_interval_days, settings.max_reviews) == ("learning", 3, "unlimited")
+
+
+def test_a_config_file_from_before_practice_modes_still_loads_and_its_rotation_selects_the_sources(tmp_path):
+    path = tmp_path / "dailygrad.toml"
+    path.write_text('[leetcode]\nrotation = ["amd", "amd", "vanguard"]\n')
+
+    settings = load_config(path).leetcode
+
+    assert settings.sources == ["amd", "vanguard"] and settings.mode == "coverage"
+    path.write_text('[leetcode]\nrotation = ["amd"]\nsources = ["vanguard"]\n')
+    assert load_config(path).leetcode.sources == ["vanguard"]  # `sources` wins when both are there
 
 
 @pytest.mark.parametrize(
     "text, message",
     [
         ('[leetcode]\nrotation = ["google"]', "leetcode.rotation must list one or more of: neetcode-150, amd, vanguard"),
-        ("[leetcode]\nrotation = []", "leetcode.rotation must list one or more of"),
         ('[leetcode]\nrotation = "amd"', "leetcode.rotation must be of type list"),
+        ('[leetcode]\nsources = ["google"]', "leetcode.sources must list one or more of: neetcode-150, amd, vanguard"),
+        ("[leetcode]\nsources = []", "leetcode.sources must list one or more of"),
+        ('[leetcode]\nmode = "random"', "leetcode.mode must be one of: coverage, loop, learning"),
+        ("[leetcode]\nreview_interval_days = 0", "leetcode.review_interval_days must be a whole number of days from 1 to 365"),
+        ("[leetcode]\nreview_interval_days = 2.5", "leetcode.review_interval_days must be of type int"),
+        ("[leetcode]\nmax_reviews = 0", 'leetcode.max_reviews must be a whole number from 1 to 1000, or "unlimited"'),
+        ('[leetcode]\nmax_reviews = "forever"', "leetcode.max_reviews must be a whole number"),
+        ("[leetcode]\nmax_reviews = true", "leetcode.max_reviews must be a whole number"),
         ("[leetcode]\nfeedback_budget_seconds = 0", "leetcode.feedback_budget_seconds must be at least 1"),
         ("[leetcode]\nkeep_alive_seconds = -1", "leetcode.keep_alive_seconds 0 or more"),
         ("[leetcode]\ndaily = true", "unknown setting: leetcode.daily"),
@@ -791,10 +817,11 @@ def test_dailygrad_config_reports_the_exercise_and_the_preferences_file(tmp_path
 
     shown = capsys.readouterr().out
     assert (
-        "LeetCode:           one exercise at a time, kept until completed or skipped, "
-        "rotating neetcode-150 -> amd -> vanguard; hints on"
+        "LeetCode:           one exercise at a time, kept until completed or skipped; "
+        "coverage practice from neetcode-150 + amd + vanguard; hints on"
     ) in shown
     assert f"LeetCode settings:  {(tmp_path / 'data' / 'leetcode_preferences.json').resolve()}" in shown
+    assert f"LeetCode practice:  {(tmp_path / 'data' / 'leetcode_practice.json').resolve()}" in shown
     assert f"Latest JSON:        {(tmp_path / 'data' / 'latest.json').resolve()}" in shown  # the earlier rows are unchanged
     assert not (tmp_path / "data").exists()
 

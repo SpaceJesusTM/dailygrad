@@ -116,7 +116,7 @@ def change(config: Config, action: str, names: list[str]) -> dict:
     everything = {source.id for source in sources}
     path = config.source_preferences_path
 
-    with _locked(path):  # so two updates cannot each overwrite the other's change
+    with locked(path):  # so two updates cannot each overwrite the other's change
         if action == "set":
             try:
                 before = read(path)
@@ -178,7 +178,7 @@ def _result(config: Config, sources: list[Source], mode: str, disabled: set[str]
 
 
 @contextmanager
-def _locked(path: Path) -> Iterator[None]:
+def locked(path: Path) -> Iterator[None]:
     """Hold an exclusive lock on a file beside `path` while a change is read, decided and written."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path.with_name(f".{path.name}.lock"), "a+") as lock:

@@ -17,8 +17,14 @@ DEFAULT_KEYWORDS = [
     "Qwen", "DeepSeek", "Hugging Face", "Ollama", "PyTorch", "MCP",
 ]  # fmt: skip
 
-# The LeetCode tracks a rotation may name. The catalog (leetcode.toml) says which problems are in each.
+# The LeetCode question sources (the catalog calls them tracks). The catalog (leetcode.toml) says which
+# problems are in each.
 LEETCODE_TRACKS = ("neetcode-150", "amd", "vanguard")
+# How the next exercise is chosen from the selected sources: see practice.py.
+PRACTICE_MODES = ("coverage", "loop", "learning")
+UNLIMITED = "unlimited"  # max_reviews without a limit, in TOML, on the command line and in JSON
+MAX_INTERVAL_DAYS = 365
+MAX_REVIEWS = 1000
 
 
 class ConfigError(ValueError):
@@ -94,8 +100,14 @@ class OllamaConfig:
 @dataclass
 class LeetCodeConfig:
     enabled: bool = True
-    # One track per exercise, repeating. A track may be left out or listed more than once.
-    rotation: list[str] = field(default_factory=lambda: list(LEETCODE_TRACKS))
+    # The question sources whose problems make up the pool, and how exercises are chosen from it. These
+    # are defaults: `dailygrad leetcode practice set` overrides them at runtime (practice.py).
+    sources: list[str] = field(default_factory=lambda: list(LEETCODE_TRACKS))
+    mode: str = "coverage"
+    review_interval_days: int = 7  # learning mode: days from a completion to the next review
+    max_reviews: int | str = 3  # learning mode: reviews after the first completion, or "unlimited"
+    # Deprecated: the tracks that took turns before practice modes. Read as `sources` when that is not set.
+    rotation: list[str] = field(default_factory=list)
     model_hints: bool = True  # the model words the digest's hint; false prints the catalog's hint as written
     feedback_budget_seconds: int = 120  # for one `dailygrad leetcode answer` or `review`
     # How long the model stays loaded after an interactive reply, so a follow-up is quick. 0 unloads at once.
@@ -147,6 +159,10 @@ class Config:
     def leetcode_preferences_path(self) -> Path:
         return Path(self.data_dir).expanduser() / "leetcode_preferences.json"
 
+    @property
+    def practice_preferences_path(self) -> Path:
+        return Path(self.data_dir).expanduser() / "leetcode_practice.json"
+
 
 def find_config_file(path: Path | None = None) -> Path | None:
     """The config file to use: `path`, else $DAILYGRAD_CONFIG, else ./dailygrad.toml, else None (defaults)."""
@@ -170,7 +186,13 @@ def load_config(path: Path | None = None) -> Config:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"cannot read config file {path}: {exc}") from exc
 
+    leetcode = raw.get("leetcode") if isinstance(raw.get("leetcode"), dict) else {}
+    max_reviews = leetcode.pop("max_reviews", None)  # an integer or "unlimited", which _apply cannot type-check
     _apply(config, raw, prefix="")
+    if max_reviews is not None:
+        config.leetcode.max_reviews = max_reviews
+    if "sources" not in leetcode and config.leetcode.rotation:
+        config.leetcode.sources = list(dict.fromkeys(config.leetcode.rotation))  # a config from before practice modes
     if "feeds" in raw.get("rss", {}):  # TOML gives plain tables; the defaults are already Feed objects
         try:
             config.rss.feeds = [Feed(**feed) for feed in config.rss.feeds]
@@ -193,12 +215,28 @@ def load_config(path: Path | None = None) -> Config:
         raise ConfigError("run_budget_seconds and ollama.timeout_seconds must be at least 1")
     if config.hackernews.keyword_boost < 1:
         raise ConfigError("hackernews.keyword_boost must be at least 1")
-    rotation = config.leetcode.rotation
-    if not rotation or not all(track in LEETCODE_TRACKS for track in rotation):
-        raise ConfigError(f"leetcode.rotation must list one or more of: {', '.join(LEETCODE_TRACKS)}")
+    for name in ("rotation", "sources"):
+        tracks = getattr(config.leetcode, name)
+        if (name == "sources" and not tracks) or not all(track in LEETCODE_TRACKS for track in tracks):
+            raise ConfigError(f"leetcode.{name} must list one or more of: {', '.join(LEETCODE_TRACKS)}")
+    config.leetcode.sources = list(dict.fromkeys(config.leetcode.sources))
+    if config.leetcode.mode not in PRACTICE_MODES:
+        raise ConfigError(f"leetcode.mode must be one of: {', '.join(PRACTICE_MODES)}")
+    if not valid_interval(config.leetcode.review_interval_days):
+        raise ConfigError(f"leetcode.review_interval_days must be a whole number of days from 1 to {MAX_INTERVAL_DAYS}")
+    if not valid_max_reviews(config.leetcode.max_reviews):
+        raise ConfigError(f'leetcode.max_reviews must be a whole number from 1 to {MAX_REVIEWS}, or "{UNLIMITED}"')
     if config.leetcode.feedback_budget_seconds < 1 or config.leetcode.keep_alive_seconds < 0:
         raise ConfigError("leetcode.feedback_budget_seconds must be at least 1 and leetcode.keep_alive_seconds 0 or more")
     return config
+
+
+def valid_interval(value) -> bool:
+    return type(value) is int and 1 <= value <= MAX_INTERVAL_DAYS
+
+
+def valid_max_reviews(value) -> bool:
+    return value == UNLIMITED or (type(value) is int and 1 <= value <= MAX_REVIEWS)
 
 
 def _apply(target, values: dict, prefix: str) -> None:

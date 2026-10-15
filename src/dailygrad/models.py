@@ -122,14 +122,14 @@ class Source:
 
 @dataclass
 class Exercise:
-    """A problem assigned as the current exercise: the track whose turn it was, and the hint written for it.
+    """A problem assigned as the current exercise: the source it was drawn from, and the hint written for it.
 
     It stays the current exercise, and is shown in each day's digest, until the user completes
     or skips it. `assigned_on` and `day` place one showing of it among the others.
     """
 
     problem: Problem
-    track: str
+    track: str  # the selected source it was drawn from (before practice modes: the track whose turn it was)
     sources: tuple[Source, ...]  # every source that lists the problem
     review: bool = False  # the problem had been assigned before
     hint: str = ""  # empty until one is written; shown only while hints are on
@@ -139,6 +139,9 @@ class Exercise:
     assigned_on: str | None = None  # the day a digest first showed it, YYYY-MM-DD; None if none has yet
     day: int = 1  # how many days it has been shown, this one included
     outcome: str | None = None  # "completed" or "skipped"; None while the user has not said either
+    # Why it was chosen (practice.describe): mode, encounter, cycle, review. None from before practice modes.
+    practice: dict | None = None
+    choice: object = None  # practice.Choice for one not yet recorded: what its schedule row will say
 
     @property
     def shown_hint(self) -> str:
