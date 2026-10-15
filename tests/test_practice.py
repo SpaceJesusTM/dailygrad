@@ -668,6 +668,7 @@ def test_no_review_due_is_reported_in_the_digest_without_degrading_it(config, fa
 # --- a fresh practice session: restart-questions
 
 
+EVERYTHING = practice.Scope("all", TRACKS)
 HISTORY = ("runs", "leetcode_assignments", "leetcode_outcomes", "leetcode_showings", "leetcode_schedule",
            "leetcode_progress", "leetcode_turns", "leetcode_coverage_passes")  # fmt: skip
 
@@ -688,12 +689,12 @@ def test_restarting_questions_makes_every_question_eligible_again_and_keeps_all_
     monkeypatch.setattr(leetcode.llm, "chat_json", no_model)
     monkeypatch.setattr(pipeline, "run", no_model)
 
-    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--json", "--config", config_file])
+    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--all", "--json", "--config", config_file])
     preview = json.loads(out)
     assert code == 0 and preview["dry_run"] and not preview["changed"] and preview["would_change"] and preview["epoch"] == 1
     assert config.db_path.read_bytes() == database  # a dry run touches nothing
 
-    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--confirm", "--json", "--config", config_file])
+    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--all", "--confirm", "--json", "--config", config_file])
     restarted = json.loads(out)
     assert code == 0 and restarted["ok"] and restarted["changed"] and restarted["history_kept"]
     assert restarted["action"] == "restart_questions" and restarted["epoch"] == 2 and restarted["session"]["exercises"] == 0
@@ -706,7 +707,7 @@ def test_restarting_questions_makes_every_question_eligible_again_and_keeps_all_
     assert restarted["upcoming"]["state"] == "exercise"
     assert {name: table(config, name) for name in HISTORY} == before  # only a marker was added
     assert config.practice_preferences_path.read_bytes() == settings_file  # the settings are untouched
-    assert [row[2:] for row in table(config, "leetcode_practice_resets")] == [(17, 0)]
+    assert [row[2:] for row in table(config, "leetcode_practice_resets")] == [(17, 0, "all", None, None)]
 
     assert practise(config, 20, start=20) == pool("amd")  # every question again, from the first
     status = tutor.status(config, now=at(40))
@@ -722,7 +723,7 @@ def test_a_restart_frees_every_source_not_only_the_selected_ones(config):
     practise(config, 20, start=40)
     assert isinstance(show(config, at(60)), practice.Waiting)  # both covered
 
-    assert tutor.restart_questions(config, True, now=at(60))["pool"] == {"problems": 17, "sources": ["amd"]}
+    assert tutor.restart_questions(config, True, EVERYTHING, now=at(60))["pool"] == {"problems": 17, "sources": ["amd"]}
     tutor.set_practice(config, {"sources": ["vanguard"]})  # a source that was not selected at the restart
 
     assert practise(config, 40, start=61) == pool("vanguard")
@@ -736,7 +737,7 @@ def test_restarting_questions_in_loop_mode_ends_the_cycle_and_the_next_exercise_
     done = practise(config, 5)
     old_order = db.cycles(db.connect(config.db_path))[0].problems
 
-    result = tutor.restart_questions(config, True, now=at(5))
+    result = tutor.restart_questions(config, True, EVERYTHING, now=at(5))
     assert result["changed"] and result["upcoming"]["state"] == "new_cycle"
     status = tutor.practice_status(config, now=at(5))
     assert status["loop"] == {"cycle": None, "cycles_completed": 0} and status["session"]["epoch"] == 2
@@ -759,7 +760,7 @@ def test_after_a_restart_learning_counts_no_earlier_completion_or_review():
     ]
     assert practice.choose(CATALOG, learning(limit=1), practice.Snapshot(history), local(9)).problem.id == third
 
-    reset = [db.Reset(1, at(9).isoformat(), 3, 0)]
+    reset = [db.Reset(1, at(9).isoformat(), 3, 0, "all", None, None)]
     fresh = practice.choose(CATALOG, learning(limit=1), practice.Snapshot(history, resets=reset), local(9))
     assert (fresh.problem.id, fresh.encounter) == (first, "repeat")  # reintroduced from the pool's first, known as seen before
 
@@ -777,7 +778,7 @@ def test_a_review_in_progress_at_a_restart_is_the_new_sessions_first_completion(
         scheduled(1, first, "completed", at(0)),
         scheduled(2, first, "completed", at(8), encounter="review", review_number=1),  # open when the session began
     ]
-    state = practice.Snapshot(history, resets=[db.Reset(1, at(7).isoformat(), 1, 0)])
+    state = practice.Snapshot(history, resets=[db.Reset(1, at(7).isoformat(), 1, 0, "all", None, None)])
 
     due = practice.choose(CATALOG, learning(limit=1), state, local(15))
 
@@ -791,7 +792,7 @@ def test_learning_with_runs_after_a_restart_reintroduces_questions_before_old_re
     review = show(config, at(7))
     assert review.practice["encounter"] == "review" and review.problem.id == first[0]
 
-    tutor.restart_questions(config, True, now=at(7))
+    tutor.restart_questions(config, True, EVERYTHING, now=at(7))
     complete(config, at(7))  # the review in progress, completed in the new session
     following = practise(config, 6, start=8)
     again = show(config, at(14))
@@ -807,10 +808,10 @@ def test_the_exercise_in_progress_stays_through_a_restart_and_is_not_given_strai
     practise(config, 3)
     open_now = show(config, at(3))
 
-    result = tutor.restart_questions(config, True, now=at(3))
+    result = tutor.restart_questions(config, True, EVERYTHING, now=at(3))
     assert result["changed"] and result["active_exercise_id"] == open_now.assignment_id
     assert result["active"]["problem_id"] == open_now.problem.id and result["session"]["exercises"] == 1
-    assert tutor.restart_questions(config, True, now=at(3))["changed"] is False  # the session holds only that one
+    assert tutor.restart_questions(config, True, EVERYTHING, now=at(3))["changed"] is False  # the session holds only that one
 
     assert show(config, at(4)).assignment_id == open_now.assignment_id  # still the current exercise
     assert len(table(config, "leetcode_outcomes")) == 3  # the restart completed and skipped nothing
@@ -823,12 +824,12 @@ def test_the_exercise_in_progress_stays_through_a_restart_and_is_not_given_strai
 
 def test_restarting_again_begins_another_session_and_every_session_lasts_across_processes(config, config_file, capsys):
     tutor.set_practice(config, {"sources": ["amd"]})
-    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--confirm", "--json", "--config", config_file])
+    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--all", "--confirm", "--json", "--config", config_file])
     assert code == 0 and json.loads(out)["changed"] is False and not config.db_path.exists()  # nothing to restart
     practise(config, 2)
 
     def restart():
-        code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--confirm", "--json", "--config", config_file])
+        code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--all", "--confirm", "--json", "--config", config_file])
         assert code == 0
         return json.loads(out)
 
@@ -843,23 +844,247 @@ def test_restarting_again_begins_another_session_and_every_session_lasts_across_
     assert tutor.restart_coverage(config, True, now=at(5))["coverage"]["pass"] == 2  # passes count within the session
 
 
+# --- resetting the questions of some sources
+
+
+AMD, VANGUARD = set(pool("amd")), set(pool("vanguard"))
+SHARED = AMD & VANGUARD  # two questions both lists hold
+
+
+def scope(*sources) -> practice.Scope:
+    return practice.Scope("sources", tuple(source for source in TRACKS if source in sources))
+
+
+def reset_rows(config) -> list[tuple]:
+    return [(row[4], json.loads(row[5]) if row[5] else None, len(json.loads(row[6])) if row[6] else None)
+            for row in table(config, "leetcode_practice_resets")]  # fmt: skip
+
+
+def test_the_catalog_has_overlapping_sources_for_these_tests():
+    assert len(SHARED) == 2 and len(pool("amd", "vanguard")) == 47 == len(AMD | VANGUARD)
+
+
+def test_resetting_one_source_frees_only_its_questions_and_keeps_the_rest_covered(config, config_file, capsys):
+    tutor.set_practice(config, {"sources": ["amd", "vanguard"]})
+    practise(config, 50)
+    assert isinstance(show(config, at(50)), practice.Waiting)  # all 47 covered
+    before = {name: table(config, name) for name in HISTORY}
+
+    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--sources", "amd", "--confirm", "--json", "--config", config_file])
+    result = json.loads(out)
+    assert code == 0 and result["changed"] and result["epoch"] == 2
+    assert result["scope"] == {"kind": "sources", "sources": [{"id": "amd", "name": "AMD"}], "questions": 17}
+    assert result["freed_exercises"] == 17 and result["settings"]["sources"] == ["amd", "vanguard"]
+    assert {name: table(config, name) for name in HISTORY} == before
+    assert reset_rows(config) == [("sources", ["amd"], 17)]
+
+    again = practise(config, 30, start=51)
+    assert again == [problem for problem in pool("amd", "vanguard") if problem in AMD]  # the shared two included, once each
+    status = tutor.practice_status(config, now=at(90))
+    assert status["coverage"]["complete"] and status["coverage"]["pass"] == 1  # a scoped reset begins no new pass
+    assert status["session"]["last_reset"]["scope"] == "sources" and status["session"]["started_at"] is None
+
+
+def test_a_reset_of_overlapping_sources_counts_each_question_once(config):
+    config.leetcode.sources = ["amd", "vanguard"]
+    practise(config, 50)
+
+    result = tutor.restart_questions(config, True, scope("amd", "vanguard"), now=at(50))
+
+    assert result["scope"]["questions"] == 47 and result["freed_exercises"] == 47
+    assert practise(config, 60, start=51) == pool("amd", "vanguard")  # every question again, none twice
+
+
+def test_a_source_reset_holds_after_the_selection_changes(config):
+    tutor.set_practice(config, {"sources": ["amd"]})
+    practise(config, 20)
+    tutor.set_practice(config, {"sources": ["vanguard"]})
+    practise(config, 40, start=20)  # Vanguard covered, AMD's two shared questions already among them
+
+    tutor.restart_questions(config, True, scope("amd"), now=at(60))  # AMD, which is not selected now
+    coverage = tutor.practice_status(config, now=at(60))["coverage"]
+    assert (coverage["remaining"], coverage["complete"]) == (2, False)  # in Vanguard, only the two it shares with AMD
+    tutor.set_practice(config, {"sources": ["amd"]})
+    assert practise(config, 20, start=61) == pool("amd")
+
+
+def test_the_selected_sources_are_fixed_when_the_reset_is_made(config, config_file, capsys):
+    tutor.set_practice(config, {"sources": ["amd"]})
+    practise(config, 20)
+    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--selected", "--confirm", "--json", "--config", config_file])
+    assert code == 0 and json.loads(out)["scope"]["kind"] == "selected" and reset_rows(config) == [("selected", ["amd"], 17)]
+
+    tutor.set_practice(config, {"sources": ["amd", "vanguard"]})  # the reset still covers AMD alone
+    rest = practise(config, 60, start=20)
+    assert rest == pool("amd", "vanguard")  # AMD again, and Vanguard for the first time
+    assert len(rest) == len(set(rest))
+
+
+def test_a_source_reset_resets_learning_only_for_its_questions():
+    vanguard_only = next(problem for problem in pool("vanguard") if problem not in AMD)
+    first = pool("amd")[0]
+    history = [
+        scheduled(1, first, "completed", at(0)), scheduled(2, first, "completed", at(7), encounter="review", review_number=1),
+        scheduled(3, vanguard_only, "completed", at(0)),
+        scheduled(4, vanguard_only, "completed", at(7), encounter="review", review_number=1),
+    ]
+    settings = learning(limit=1, sources=("amd", "vanguard"))
+    reset = db.Reset(1, at(8).isoformat(), 4, 0, "sources", ("amd",), frozenset(AMD))
+    state = practice.Snapshot(history, resets=[reset])
+
+    overview = practice.overview(CATALOG, settings, state, local(8), None)["learning"]
+    chosen = practice.choose(CATALOG, settings, state, local(8))
+
+    assert overview["reviews_complete"] == 1  # the Vanguard question keeps its completed review
+    assert overview["new_remaining"] == 46  # the AMD question is new again, beside the 45 never practised
+    assert chosen.problem.id == pool("amd", "vanguard")[0]  # new questions in the pool's order: the reset one among them
+
+
+def test_after_a_source_reset_switching_to_learning_reviews_the_rest_and_reintroduces_the_reset(config):
+    config.leetcode.sources, config.leetcode.review_interval_days = ["amd", "vanguard"], 7
+    practise(config, 50)
+    tutor.restart_questions(config, True, scope("vanguard"), now=at(50))
+    config.leetcode.mode = "learning"
+
+    overview = tutor.practice_status(config, now=at(50))["learning"]
+    assert overview["new_remaining"] == 32 and overview["due_now"] == 15  # AMD's own 15 are due; Vanguard's 32 are new
+    review = show(config, at(50))
+    assert review.practice["encounter"] == "review" and review.problem.id in AMD - VANGUARD
+
+
+def test_a_source_reset_in_loop_mode_keeps_the_cycle_and_gives_only_its_questions_again(config):
+    config.leetcode.sources, config.leetcode.mode = ["amd", "vanguard"], "loop"
+    before = practise(config, 20)
+    cycle = db.cycles(db.connect(config.db_path))[0]
+
+    result = tutor.restart_questions(config, True, scope("amd"), now=at(20))
+    reopened = [problem for problem in before if problem in AMD]
+    assert result["loop_cycle"] == {"number": 1, "ends": False, "reopened": len(reopened)} and reopened
+    status = tutor.practice_status(config, now=at(20))["loop"]["cycle"]
+    assert (status["assigned"], status["size"]) == (20 - len(reopened), 47)
+
+    after = []
+    for day in range(21, 80):  # the rest of cycle 1, as the open cycle now stands
+        shown = show(config, at(day))
+        complete(config, at(day))
+        after.append(shown)
+        if shown.practice["cycle"]["position"] == 47:
+            break
+    problems = [shown.problem.id for shown in after]
+    assert set(problems) == set(cycle.problems) - (set(before) - AMD)  # nothing outside AMD is repeated
+    assert len(problems) == len(set(problems)) == 47 - 20 + len(reopened)
+    assert problems[0] != before[-1]
+    assert [shown.practice["cycle"]["position"] for shown in after] == list(range(21 - len(reopened), 48))
+    assert {shown.practice["cycle"]["number"] for shown in after} == {1}
+    following = show(config, at(80))
+    assert following.practice["cycle"] == {"number": 2, "position": 1, "size": 47}  # then a fresh cycle, as ever
+
+
+def test_a_reset_covering_the_whole_open_cycle_ends_it(config):
+    tutor.set_practice(config, {"sources": ["amd"], "mode": "loop"})
+    practise(config, 5)
+
+    result = tutor.restart_questions(config, True, practice.Scope("selected", ("amd",)), now=at(5))
+
+    assert result["loop_cycle"] == {"number": 1, "ends": True, "reopened": 0} and result["upcoming"]["state"] == "new_cycle"
+    assert [cycle.ended for cycle in db.cycles(db.connect(config.db_path))] == ["reset"]
+    assert show(config, at(6)).practice["cycle"] == {"number": 2, "position": 1, "size": 17}  # numbering goes on
+
+
+def test_the_exercise_in_progress_counts_only_if_it_is_in_the_scope(config):
+    config.leetcode.sources = ["amd", "vanguard"]
+    practise(config, 46)
+    open_now = show(config, at(46))  # the last question of the pool
+    assert open_now.problem.id in VANGUARD - AMD
+
+    result = tutor.restart_questions(config, True, scope("amd"), now=at(46))
+    assert result["changed"] and result["active_in_scope"] is False and result["active_exercise_id"] == open_now.assignment_id
+    assert show(config, at(47)).assignment_id == open_now.assignment_id
+    complete(config, at(47))
+    assert practise(config, 30, start=48) == [problem for problem in pool("amd", "vanguard") if problem in AMD]
+
+    vanguard = tutor.restart_questions(config, True, scope("vanguard"), now=at(80))
+    assert vanguard["active_in_scope"] is False and vanguard["freed_exercises"] == 32  # nothing is in progress now
+
+
+def test_repeating_a_source_reset_changes_nothing_until_something_is_assigned(config):
+    config.leetcode.sources = ["amd"]
+    practise(config, 3)
+    assert tutor.restart_questions(config, True, scope("amd"), now=at(3))["changed"]
+    second = tutor.restart_questions(config, True, scope("amd"), now=at(3))
+    assert second["changed"] is False and second["would_change"] is False and second["freed_exercises"] == 0
+    assert tutor.restart_questions(config, True, scope("vanguard"), now=at(3))["changed"] is False  # nothing of it counted
+    assert len(table(config, "leetcode_practice_resets")) == 1
+
+
+@pytest.mark.parametrize(
+    "arguments, code",
+    [
+        ([], "no_scope"),
+        (["--sources", "google"], "unknown_source"),
+        (["--sources", "AMD;", "--confirm"], "unknown_source"),
+    ],
+)
+def test_a_reset_without_one_valid_scope_is_refused_and_changes_nothing(config, config_file, capsys, arguments, code):
+    config.leetcode.sources = list(TRACKS)
+    practise(config, 2)
+    database = config.db_path.read_bytes()
+
+    status, out, _ = run_cli(capsys, ["practice", "restart-questions", *arguments, "--confirm", "--json", "--config", config_file])
+
+    assert status == 2 and json.loads(out)["error"]["code"] == code and config.db_path.read_bytes() == database
+
+
+def test_two_scopes_at_once_are_refused(config_file, capsys):
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["leetcode", "practice", "restart-questions", "--all", "--selected", "--config", config_file])
+    assert refused.value.code == 2
+
+
+def test_resetting_the_selected_sources_needs_a_usable_settings_file(config, config_file, capsys):
+    practise(config, 2)
+    config.practice_preferences_path.write_text("{not json")
+
+    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--selected", "--confirm", "--json", "--config", config_file])
+
+    assert code == 2 and json.loads(out)["error"]["code"] == "invalid_preferences" and not table(config, "leetcode_practice_resets")
+    assert run_cli(capsys, ["practice", "restart-questions", "--all", "--confirm", "--json", "--config", config_file])[0] == 0
+
+
+def test_a_resets_table_from_before_scopes_gains_them_and_its_rows_reset_everything(config):
+    config.data_dir and Path(config.data_dir).mkdir(parents=True)
+    conn = sqlite3.connect(config.db_path)
+    conn.execute("CREATE TABLE leetcode_practice_resets (id INTEGER PRIMARY KEY, reset_at TEXT NOT NULL,"
+                 " after_assignment_id INTEGER NOT NULL, after_cycle_id INTEGER NOT NULL)")  # fmt: skip
+    conn.execute("INSERT INTO leetcode_practice_resets VALUES (1, '2026-10-14T12:00:00+00:00', 0, 0)")
+    conn.commit()
+    conn.close()
+
+    read = db.read_only(config.db_path)
+    assert [reset.problems for reset in db.practice_resets(read)] == [None]  # read as it is
+    read.close()
+    db.connect(config.db_path).close()
+    assert reset_rows(config) == [("all", None, None)]
+
+
 def test_restart_questions_in_plain_text(config, config_file, capsys):
     run_cli(capsys, ["practice", "set", "--sources", "amd", "--config", config_file])
-    empty = run_cli(capsys, ["practice", "restart-questions", "--config", config_file])[1]
-    assert "has nothing in it yet, so a restart would change nothing" in empty
+    empty = run_cli(capsys, ["practice", "restart-questions", "--all", "--config", config_file])[1]
+    assert "None of every question (182, from every source) has an exercise that counts yet, so a reset would change nothing" in empty
     practise(config, 2)
     shown = show(config, at(2))
 
-    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--config", config_file])
-    assert code == 0 and "Practice session 1: 3 exercises assigned. A restart begins session 2" in out
-    assert "Dry run: nothing was changed. To restart: dailygrad leetcode practice restart-questions --confirm" in out
+    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--selected", "--config", config_file])
+    assert code == 0 and out.startswith("Resetting the 17 questions of AMD (the selected sources) makes them eligible again")
+    assert "2 earlier exercises of them would no longer count" in out
+    assert "Dry run: nothing was changed. To reset: dailygrad leetcode practice restart-questions --selected --confirm" in out
 
-    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--confirm", "--config", config_file])
-    assert code == 0 and out.startswith("Practice session 2 begun: every question is eligible again (17 problems from AMD")
-    assert f"Exercise {shown.assignment_id} ({shown.problem.title}) stays current" in out
-    again = run_cli(capsys, ["practice", "restart-questions", "--config", config_file])[1]
-    assert "Practice session 2 has nothing in it yet but the exercise in progress, so a restart would change nothing" in again
-    assert "Session:   2, since 2026-10-" in run_cli(capsys, ["practice", "--config", config_file])[1]
+    code, out, _ = run_cli(capsys, ["practice", "restart-questions", "--all", "--confirm", "--config", config_file])
+    assert code == 0 and out.startswith("Reset every question (182, from every source): they are eligible again in every mode")
+    assert f"Exercise {shown.assignment_id} ({shown.problem.title}) stays current and counts as its question's first" in out
+    again = run_cli(capsys, ["practice", "restart-questions", "--sources", "amd", "--config", config_file])[1]
+    assert "None of the 17 questions of AMD has an exercise that counts yet but the exercise in progress" in again
+    assert "Reset:     every question on 2026-10-" in run_cli(capsys, ["practice", "--config", config_file])[1]
 
 
 # --- concurrency
@@ -889,7 +1114,7 @@ def test_a_restart_during_a_run_applies_to_what_it_records(config, monkeypatch):
     real = leetcode.write_hint
 
     def meanwhile(problem, settings):  # while the run is at work on the model, the user starts every question over
-        tutor.restart_questions(config, True, now=at(3))
+        tutor.restart_questions(config, True, EVERYTHING, now=at(3))
         return problem.hints[0], "model"
 
     monkeypatch.setattr(leetcode, "write_hint", meanwhile)
@@ -924,7 +1149,7 @@ def test_status_and_practice_read_without_creating_or_changing_anything(config, 
     files = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in Path(config.data_dir).rglob("*") if path.is_file()}
 
     for arguments in (["practice", "--json"], ["practice", "show"], ["status", "--json"], ["practice", "restart-coverage"],
-                      ["practice", "restart-questions"]):
+                      ["practice", "restart-questions", "--all"]):
         assert run_cli(capsys, [*arguments, "--config", config_file])[0] == 0
     tutor.practice_status(config, now=at(400))
 

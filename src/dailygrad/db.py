@@ -185,17 +185,22 @@ CREATE TABLE IF NOT EXISTS leetcode_coverage_passes (
     after_assignment_id INTEGER NOT NULL
 );
 
--- A fresh practice session, asked for by the user (`dailygrad leetcode practice restart-questions`):
--- every question of every source is eligible again, in every mode, as if practice began anew.
--- Exercises up to and including after_assignment_id, and loop cycles up to and including
--- after_cycle_id, belong to earlier sessions; the newest row is the session in force, and with
--- none everything is in the first. Nothing else is changed: earlier exercises, outcomes, marks
--- and exchanges stay, for the record and for statistics.
+-- A reset of question progress, asked for by the user (`dailygrad leetcode practice restart-questions`):
+-- the questions it covers are eligible again, in every mode, as if never practised. For each
+-- question, its exercises up to and including after_assignment_id of the newest reset that
+-- covers it belong to an earlier practice period, and no longer count; a question no reset
+-- covers counts everything. A reset of `all` also begins a new practice session: loop cycles up
+-- to and including after_cycle_id, and coverage passes, belong to earlier sessions. Nothing
+-- else is changed: earlier exercises, outcomes, marks and exchanges stay, for the record and for
+-- statistics.
 CREATE TABLE IF NOT EXISTS leetcode_practice_resets (
     id INTEGER PRIMARY KEY,
     reset_at TEXT NOT NULL,
     after_assignment_id INTEGER NOT NULL,
-    after_cycle_id INTEGER NOT NULL
+    after_cycle_id INTEGER NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'all',  -- 'all', 'sources' (named ones) or 'selected' (those selected then)
+    sources TEXT,  -- the source IDs it was given, as a JSON list; NULL for 'all'
+    problems TEXT  -- the problem IDs it covers, fixed when it was made, as a JSON list; NULL for 'all'
 );
 """
 
@@ -204,8 +209,25 @@ def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    _upgrade_resets(conn)
     _backfill_showings(conn)
     return conn
+
+
+RESET_SCOPE_COLUMNS = (("scope", "TEXT NOT NULL DEFAULT 'all'"), ("sources", "TEXT"), ("problems", "TEXT"))
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _upgrade_resets(conn: sqlite3.Connection) -> None:
+    """Give leetcode_practice_resets from before scoped resets their scope columns: each of its rows reset everything."""
+    missing = [(name, kind) for name, kind in RESET_SCOPE_COLUMNS if name not in _columns(conn, "leetcode_practice_resets")]
+    if missing:
+        with conn:
+            for name, kind in missing:
+                conn.execute(f"ALTER TABLE leetcode_practice_resets ADD COLUMN {name} {kind}")
 
 
 def _backfill_showings(conn: sqlite3.Connection) -> None:
@@ -737,32 +759,46 @@ def start_coverage_pass(conn: sqlite3.Connection, after_assignment_id: int, now:
 
 
 class Reset(NamedTuple):
-    """A fresh practice session: what came before it belongs to earlier sessions."""
+    """A reset of question progress: the questions it covers start a new practice period after it."""
 
     id: int
     reset_at: str
     after_assignment_id: int
     after_cycle_id: int
+    scope: str  # 'all', 'sources' or 'selected'
+    sources: tuple[str, ...] | None  # None for 'all'
+    problems: frozenset[str] | None  # the questions it covers; None for every one
 
 
 def practice_resets(conn: sqlite3.Connection) -> list[Reset]:
-    """Every fresh practice session begun, oldest first."""
+    """Every reset of question progress, oldest first."""
     if not _has_table(conn, "leetcode_practice_resets"):
         return []
-    rows = conn.execute("SELECT id, reset_at, after_assignment_id, after_cycle_id FROM leetcode_practice_resets ORDER BY id")
-    return [Reset._make(row) for row in rows]
+    scoped = "scope" in _columns(conn, "leetcode_practice_resets")  # read-only, from before scoped resets: all 'all'
+    columns = "scope, sources, problems" if scoped else "'all', NULL, NULL"
+    rows = conn.execute(
+        f"SELECT id, reset_at, after_assignment_id, after_cycle_id, {columns} FROM leetcode_practice_resets ORDER BY id"
+    )
+    return [
+        Reset(*row[:5], tuple(json.loads(row[5])) if row[5] else None, frozenset(json.loads(row[6])) if row[6] else None)
+        for row in rows
+    ]
 
 
-def start_practice_session(conn: sqlite3.Connection, after_assignment_id: int, now: datetime) -> None:
-    """Begin a fresh practice session: add its marker, and end the open loop cycle, which belongs to the old one."""
+def record_reset(
+    conn: sqlite3.Connection, after_assignment_id: int, scope: str, sources: tuple[str, ...] | None,
+    problems: list[str] | None, now: datetime,
+) -> None:  # fmt: skip
+    """Add a reset of question progress. `problems` None covers every question."""
     (after_cycle_id,) = conn.execute("SELECT COALESCE(MAX(id), 0) FROM leetcode_cycles").fetchone()
     conn.execute(
-        "UPDATE leetcode_cycles SET ended = 'reset', ended_at = ? WHERE ended IS NULL", (now.isoformat(),)
-    )
-    conn.execute(
-        "INSERT INTO leetcode_practice_resets (reset_at, after_assignment_id, after_cycle_id) VALUES (?, ?, ?)",
-        (now.isoformat(), after_assignment_id, after_cycle_id),
-    )
+        "INSERT INTO leetcode_practice_resets (reset_at, after_assignment_id, after_cycle_id, scope, sources, problems)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            now.isoformat(), after_assignment_id, after_cycle_id, scope, json.dumps(list(sources)) if sources else None,
+            json.dumps(problems) if problems is not None else None,
+        ),
+    )  # fmt: skip
 
 
 def read_only(path: Path) -> sqlite3.Connection | None:

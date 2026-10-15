@@ -17,13 +17,22 @@ keeps every list it is on for reporting. The mode decides what comes next from t
               come first, the longest due first; then problems never completed. With neither,
               practice waits: "No reviews due. Next review: ...".
 
-The modes decide from the current practice session alone. `dailygrad leetcode practice
-restart-questions` begins a fresh one: every question of every source is eligible again in
-every mode, as if practice began anew (coverage from its first question, a freshly shuffled loop
-cycle, learning with no completion or review counted), while every earlier exercise, outcome and
-mark stays in the database for the record. The exercise in progress when a session begins is its
-first, so finishing it does not bring it straight back. Whether a problem was ever assigned
-before ("first" or "repeat") is still said of all history.
+Each question is decided from its current practice period alone. `dailygrad leetcode practice
+restart-questions` resets the questions of a scope (every question, the named sources' or the
+selected sources'): they are eligible again in every mode, as if never practised (coverage
+assigns them again, learning counts no earlier completion or review of them), while every
+earlier exercise, outcome and mark stays in the database for the record, and questions outside
+the scope are untouched. A reset of every question also begins a new practice session, in
+which coverage passes and loop cycles are counted from 1. The exercise in progress at a reset
+counts as its question's first in the new period, so finishing it does not bring it straight
+back. Whether a problem was ever assigned before ("first" or "repeat") is still said of all
+history.
+
+A loop cycle always holds the whole combined pool. A reset that covers every question of the
+open cycle ends it, and the next exercise begins a freshly shuffled one. A narrower reset keeps
+the cycle: the questions of its scope the cycle has assigned already go back into its unassigned
+part, in the cycle's stored order, and are given again before it ends; nothing outside the
+scope is repeated, and the problem just assigned is never given straight back.
 
 Everything here is deterministic except the order of a new loop cycle, which is shuffled once
 and stored. Only the user's word moves practice on: an exercise ends when they complete or
@@ -273,7 +282,7 @@ def _write(path, stored: dict, now: datetime) -> None:
 
 @dataclass
 class Snapshot:
-    """Every exercise with its outcome and schedule, the loop cycles, the coverage passes and the practice sessions."""
+    """Every exercise with its outcome and schedule, the loop cycles, the coverage passes and the resets."""
 
     history: list[db.Scheduled] = field(default_factory=list)
     cycles: list[db.Cycle] = field(default_factory=list)
@@ -281,24 +290,45 @@ class Snapshot:
     resets: list[db.Reset] = field(default_factory=list)
 
     @property
+    def everything_reset(self) -> db.Reset | None:
+        """The newest reset of every question: the one the practice session in force began with."""
+        return next((reset for reset in reversed(self.resets) if reset.problems is None), None)
+
+    @property
     def start(self) -> int:
         """The exercise ID the practice session in force begins after: 0 for the first session."""
-        return self.resets[-1].after_assignment_id if self.resets else 0
+        reset = self.everything_reset
+        return reset.after_assignment_id if reset else 0
 
     @property
     def epoch(self) -> int:
-        """The number of the practice session in force, from 1."""
+        """The practice period in force, from 1: one more for each reset, whatever its scope."""
         return len(self.resets) + 1
 
+    def reset_point(self, problem_id: str, before: int | None = None) -> int:
+        """The exercise ID a question's current practice period begins after: its exercises up to it no longer count.
+
+        With `before`, only the resets made before that exercise was assigned count: its period then.
+        """
+        return max(
+            (
+                reset.after_assignment_id for reset in self.resets
+                if (reset.problems is None or problem_id in reset.problems)
+                and (before is None or reset.after_assignment_id < before)
+            ),
+            default=0,
+        )  # fmt: skip
+
     def session(self) -> "Snapshot":
-        """What the modes decide from: only the practice session in force, its exercises, cycles and passes."""
+        """What the modes decide from: each question's exercises in its current period, and the session's cycles and passes."""
         if not self.resets:
             return self
-        reset = self.resets[-1]
+        everything = self.everything_reset
+        after, after_cycle = (everything.after_assignment_id, everything.after_cycle_id) if everything else (0, 0)
         return Snapshot(
-            [entry for entry in self.history if entry.id > reset.after_assignment_id],
-            [cycle for cycle in self.cycles if cycle.id > reset.after_cycle_id],
-            [started for started in self.passes if started[1] > reset.after_assignment_id],
+            [entry for entry in self.history if entry.id > self.reset_point(entry.problem_id)],
+            [cycle for cycle in self.cycles if cycle.id > after_cycle],
+            [started for started in self.passes if started[1] > after],
             self.resets,
         )
 
@@ -365,7 +395,8 @@ def choose(catalog: Catalog, current: Settings, state: Snapshot, today: date, sk
     to leave out, such as the one still in progress when status looks ahead.
     """
     pool = [problem for problem in catalog.pool(current.sources) if problem.id not in skip]
-    assigned = {entry.problem_id for entry in state.history}  # in any session
+    assigned = {entry.problem_id for entry in state.history}  # in any practice period
+    last = state.history[-1].problem_id if state.history else None
     encounter = lambda problem: "repeat" if problem.id in assigned else "first"  # noqa: E731
     state = state.session()
     if current.mode == "coverage":
@@ -380,6 +411,8 @@ def choose(catalog: Catalog, current: Settings, state: Snapshot, today: date, sk
         remaining = [problem_id for problem_id in remaining if problem_id not in skip]
         if not remaining:
             return None
+        if len(remaining) > 1 and remaining[0] == last:  # a reset question back in the cycle: never twice in a row
+            remaining = remaining[1:]
         problem = catalog.get(remaining[0])
         return Choice(problem, "loop", current.sources, encounter(problem), cycle=cycle, position=done + 1)
     return _learning_choice(pool, current, state, today, encounter)
@@ -389,6 +422,7 @@ def _open_cycle(catalog: Catalog, current: Settings, state: Snapshot) -> tuple[d
     """(the open cycle, its problems not yet assigned in it in order, how many have been).
 
     Nothing remains of a cycle whose sources are no longer the selected ones: it is not continued.
+    A question reset since the cycle assigned it counts as not assigned in it (see the module's note).
     """
     cycle = next((cycle for cycle in reversed(state.cycles) if cycle.ended is None), None)
     if cycle is None or set(cycle.sources) != set(current.sources):
@@ -514,6 +548,85 @@ def _learning_choice(pool: list[Problem], current: Settings, state: Snapshot, to
     return Waiting("learning", current.sources, "learning_complete", max_reviews=current.max_reviews)
 
 
+# --- resetting questions
+
+
+@dataclass(frozen=True)
+class Scope:
+    """The questions a reset covers: every one, or those of some sources (named, or the ones selected)."""
+
+    kind: str  # "all", "sources" or "selected"
+    sources: tuple[str, ...]  # every source for "all"; in the catalog's order
+
+    def problems(self, catalog: Catalog) -> list[str] | None:
+        """The questions covered, each once however many of its sources list it; None for every question."""
+        return None if self.kind == "all" else [problem.id for problem in catalog.pool(self.sources)]
+
+
+def parse_scope(config: Config, everything: bool = False, sources=None, selected: bool = False) -> Scope:
+    """Exactly one scope, as given on a command line. Raises PracticeError; nothing is stored here."""
+    if sum((bool(everything), sources is not None, bool(selected))) != 1:
+        raise PracticeError("no_scope", "name exactly one scope: --all, --sources ID... or --selected")
+    if everything:
+        return Scope("all", tuple(LEETCODE_TRACKS))
+    if selected:
+        return Scope("selected", settings(config).sources)  # an unusable settings file raises: nothing is guessed
+    return Scope("sources", tuple(parse_changes(sources=sources)["sources"]))
+
+
+@dataclass(frozen=True)
+class ResetPlan:
+    """What a reset made now would do."""
+
+    after: int  # each covered question's exercises up to this one end their period; the one in progress is kept
+    freed: int  # exercises that would stop counting: none means the reset would change nothing
+    questions: int  # questions covered, each once
+    cycle: db.Cycle | None  # the open loop cycle, if any
+    cycle_ends: bool  # the reset covers all of it: it ends, and the next loop exercise begins a fresh one
+    reopened: int  # otherwise: questions the cycle had assigned that it will give again
+
+
+def plan_reset(catalog: Catalog, state: Snapshot, scope: Scope, active: db.Assigned | None) -> ResetPlan:
+    """What resetting `scope` now would do. Reads only. The exercise in progress counts as its question's first after it."""
+    problems = scope.problems(catalog)
+    covered = (lambda problem_id: True) if problems is None else frozenset(problems).__contains__
+    newest = state.history[-1].id if state.history else 0
+    after = active.id - 1 if active else newest
+    session = state.session()
+    freed = [entry for entry in session.history if covered(entry.problem_id) and entry.id <= after]
+    cycle = next((cycle for cycle in reversed(session.cycles) if cycle.ended is None), None)
+    ends = cycle is not None and all(covered(problem_id) for problem_id in cycle.problems)
+    reopened = len({entry.problem_id for entry in freed if cycle and entry.cycle_id == cycle.id}) if not ends else 0
+    return ResetPlan(after, len(freed), len(catalog.problems) if problems is None else len(problems), cycle, ends, reopened)
+
+
+def reset_questions(
+    conn: sqlite3.Connection, catalog: Catalog, scope: Scope, active: db.Assigned | None, now: datetime
+) -> ResetPlan:  # fmt: skip
+    """Reset the questions of `scope`, if that changes anything. Call it inside a write transaction.
+
+    Only a reset row is added, and the open loop cycle is ended if the reset covers all of it.
+    """
+    plan = plan_reset(catalog, snapshot(conn), scope, active)
+    if plan.freed:
+        sources = None if scope.kind == "all" else scope.sources
+        db.record_reset(conn, plan.after, scope.kind, sources, scope.problems(catalog), now)
+        if plan.cycle_ends:
+            db.end_cycle(conn, plan.cycle.id, "reset", now)
+        log.info("LeetCode questions reset (%s: %s): %d exercises no longer count", scope.kind, ", ".join(scope.sources), plan.freed)
+    return plan
+
+
+def reset_document(catalog: Catalog, reset: db.Reset) -> dict:
+    """A reset as the commands report it."""
+    return {
+        "scope": reset.scope,
+        "sources": [source for source in (reset.sources or LEETCODE_TRACKS) if source in catalog.sources],
+        "questions": len(catalog.problems) if reset.problems is None else len(reset.problems),
+        "reset_at": reset.reset_at,
+    }
+
+
 # --- describing practice
 
 
@@ -523,7 +636,10 @@ def describe(catalog: Catalog, state: Snapshot, assignment_id: int, current: Set
     if entry is None or entry.mode is None:
         return None
     cycle = next((cycle for cycle in state.cycles if cycle.id == entry.cycle_id), None)
-    position = sum(other.cycle_id == entry.cycle_id and other.id <= entry.id for other in state.history)
+    position = len({
+        other.problem_id for other in state.history
+        if other.cycle_id == entry.cycle_id and state.reset_point(other.problem_id, before=entry.id) < other.id <= entry.id
+    })  # its place among the cycle's questions as it stood then, a question reset and given again counted once
     return _document(entry.mode, entry.sources, entry.encounter, cycle, position, entry.review_number, entry.due_on, current)
 
 
@@ -562,10 +678,14 @@ def status_document(catalog: Catalog, current: Settings, waiting: Waiting | None
 def overview(catalog: Catalog, current: Settings, everything: Snapshot, today: date, active: db.Assigned | None) -> dict:
     """How far practice has come in each mode in the session in force, and what the next exercise will be. Reads only."""
     state = everything.session()
+    newest = everything.resets[-1] if everything.resets else None
+    began = everything.everything_reset
     session = {
-        "epoch": state.epoch,  # 1 until the first `restart-questions`
-        "started_at": state.resets[-1].reset_at if state.resets else None,
-        "exercises": len(state.history),  # assigned in this session, the one in progress included
+        "epoch": everything.epoch,  # the practice period: 1 until the first `restart-questions`, one more for each
+        "started_at": began.reset_at if began else None,  # the session: since the newest reset of every question
+        "last_reset": reset_document(catalog, newest) if newest else None,
+        "exercises": sum(entry.id > newest.after_assignment_id for entry in everything.history) if newest
+        else len(everything.history),  # assigned since the newest reset, the one in progress included
     }
     pool = catalog.pool(current.sources)
     ids = {problem.id for problem in pool}

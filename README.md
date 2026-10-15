@@ -324,13 +324,15 @@ dailygrad leetcode practice set --sources amd neetcode-150 --mode loop
 dailygrad leetcode practice set --mode learning --interval 7 --max-reviews 3
 dailygrad leetcode practice set --sources all --mode learning --interval 3 --max-reviews unlimited
 dailygrad leetcode practice restart-coverage                       # what a fresh pass would do; add --confirm to begin one
-dailygrad leetcode practice restart-questions                      # every question of every source eligible again; add --confirm
+dailygrad leetcode practice restart-questions --all                # every question eligible again; add --confirm to do it
+dailygrad leetcode practice restart-questions --sources amd vanguard  # only those sources' questions (or --selected)
 dailygrad leetcode practice reset                                  # back to the config file's settings
 ```
 
 A change applies when the next exercise is chosen: the one in progress stays until you
 complete or skip it. Nothing in the history is ever changed or deleted: `restart-questions`
-starts practice over, as if from scratch, but keeps every past exercise for your statistics. The choices are kept
+starts practice over for all questions or some sources' questions, as if from scratch, but keeps
+every past exercise for your statistics. The choices are kept
 in `data/leetcode_practice.json`, which survives updates and overrides `[leetcode]` in the
 config file. [`docs/leetcode.md`](docs/leetcode.md#question-sources-and-practice-modes)
 describes every rule and the JSON of each command.

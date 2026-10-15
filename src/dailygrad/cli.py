@@ -482,14 +482,19 @@ def add_practice_command(actions, options: list[argparse.ArgumentParser]) -> Non
     restart.add_argument("--confirm", action="store_true", help="begin the new pass")
     fresh = subactions.add_parser(
         "restart-questions", parents=options,
-        help="begin a fresh practice session: every question of every source is eligible again; history is kept",
-        description="Begin a fresh practice session, as if practice began anew: every question of every source is "
-        "eligible again in every mode. Coverage starts from its first question, loop mode begins a freshly shuffled "
-        "cycle, and learning mode counts no earlier completion or review. The settings, the current exercise and "
-        "every past exercise, outcome and mark are kept. This is not `practice reset`, which forgets settings. "
-        "Without --confirm this only shows what would happen.",
+        help="reset questions (all, or some sources'), so they are eligible again; history is kept",
+        description="Reset the questions of one scope, as if never practised: they are eligible again in every mode. "
+        "Coverage assigns them again, learning mode counts no earlier completion or review of them, and loop mode "
+        "gives them again (a reset covering the whole open cycle ends it, and the next loop exercise begins a freshly "
+        "shuffled one). Other questions are untouched. The settings, the current exercise and every past exercise, "
+        "outcome and mark are kept. This is not `practice reset`, which forgets settings. Without --confirm this only "
+        "shows what would happen.",
     )  # fmt: skip
-    fresh.add_argument("--confirm", action="store_true", help="begin the new session")
+    scope = fresh.add_mutually_exclusive_group()
+    scope.add_argument("--all", action="store_true", dest="everything", help="every question of every source")
+    scope.add_argument("--sources", nargs="+", metavar="ID", help="the questions of these sources, each once")
+    scope.add_argument("--selected", action="store_true", help="the questions of the sources selected now")
+    fresh.add_argument("--confirm", action="store_true", help="reset them")
 
 
 def leetcode_command(config: Config, args: argparse.Namespace) -> int:
@@ -540,7 +545,8 @@ def practice_command(config: Config, args: argparse.Namespace) -> tuple[str, dic
     if action == "restart-coverage":
         return "restart coverage", tutor.restart_coverage(config, args.confirm)
     if action == "restart-questions":
-        return "restart questions", tutor.restart_questions(config, args.confirm)
+        scope = practice.parse_scope(config, args.everything, args.sources, args.selected)
+        return "restart questions", tutor.restart_questions(config, args.confirm, scope)
     return "practice", tutor.practice_status(config)
 
 
@@ -672,9 +678,11 @@ def practice_text(result: dict) -> str:
     lines += ["", *("  ".join([*(cell.ljust(width) for cell, width in zip(row, widths)), row[3]]) for row in rows), ""]
 
     coverage, loop, learning, session = result["coverage"], result["loop"], result["learning"], result["session"]
-    if session["epoch"] > 1:
-        since = practice.local_day(session["started_at"])
-        lines.append(f"Session:   {session['epoch']}, since {since}: earlier sessions count only as history")
+    reset = session["last_reset"]
+    if reset:
+        what = "every question" if reset["scope"] == "all" else " + ".join(names.get(s, s) for s in reset["sources"])
+        lines.append(f"Reset:     {what} on {practice.local_day(reset['reset_at'])} (practice period {session['epoch']}); "
+                     "earlier exercises of reset questions count only as history")  # fmt: skip
     per_source = ", ".join(f"{part['name']} {part['encountered']}/{part['problems']}" for part in coverage["by_source"])
     lines.append(f"Coverage:  pass {coverage['pass']}, {coverage['encountered']} of {coverage['pool']} assigned ({per_source})"
                  + (" - complete" if coverage["complete"] else ""))  # fmt: skip
@@ -684,7 +692,7 @@ def practice_text(result: dict) -> str:
         lines.append(f"Loop:      cycle {cycle['number']}, {cycle['assigned']} of {cycle['size']} assigned{stale}; "
                      f"{loop['cycles_completed']} cycle{'' if loop['cycles_completed'] == 1 else 's'} completed")  # fmt: skip
     else:
-        lines.append("Loop:      no cycle yet: the first loop exercise begins one")
+        lines.append("Loop:      no open cycle: the next loop exercise begins one")
     next_review = learning["next_review_on"] or "none scheduled"
     lines.append(f"Learning:  {learning['due_now']} due now, next review {next_review}; {learning['new_remaining']} never "
                  f"completed, {learning['scheduled']} waiting for a review, {learning['reviews_complete']} with every review done")  # fmt: skip
@@ -732,24 +740,39 @@ def restart_coverage_text(result: dict) -> str:
 
 
 def restart_questions_text(result: dict) -> str:
-    session, epoch = result["session"], result["epoch"]
-    pool = (f"{result['pool']['problems']} problems from {' + '.join(source['name'] for source in result['sources'])} "
-            f"in {result['settings']['mode']} mode, of {result['catalog_problems']} in the catalog")  # fmt: skip
-    active = result["active"]
-    kept = (f" Exercise {active['exercise_id']} ({active['title'] or active['problem_id']}) stays current and is the session's "
-            "first." if active else "")  # fmt: skip
-    empty = f"Practice session {epoch} has nothing in it yet{' but the exercise in progress' if active else ''}"
+    scope, cycle, active = result["scope"], result["loop_cycle"], result["active"]
+    names = " + ".join(source["name"] for source in scope["sources"])
+    what = {
+        "all": f"every question ({scope['questions']}, from every source)",
+        "sources": f"the {scope['questions']} questions of {names}",
+        "selected": f"the {scope['questions']} questions of {names} (the selected sources)",
+    }[scope["kind"]]
+    flags = {"all": "--all", "selected": "--selected"}.get(scope["kind"]) or "--sources " + " ".join(
+        source["id"] for source in scope["sources"]
+    )
+    kept = ""
+    if active:
+        kept = f" Exercise {active['exercise_id']} ({active['title'] or active['problem_id']}) stays current" + (
+            " and counts as its question's first after the reset." if result["active_in_scope"] else "."
+        )
+    if cycle is None:
+        loop = ""
+    elif cycle["ends"]:
+        loop = f" Loop cycle {cycle['number']} ends: the next loop exercise begins a freshly shuffled one."
+    else:
+        again = f"gives the {cycle['reopened']} of them it had assigned again" if cycle["reopened"] else "is unchanged"
+        loop = f" Loop cycle {cycle['number']} carries on and {again}; nothing else in it repeats."
+    if not result["would_change"] and not result["changed"]:
+        progress = " but the exercise in progress" if result["active_in_scope"] else ""
+        tail = "a reset would change nothing" if result["dry_run"] else "nothing was changed"
+        return f"None of {what} has an exercise that counts yet{progress}, so {tail}."
     if result["dry_run"]:
-        if not result["would_change"]:
-            return f"{empty}, so a restart would change nothing."
-        return (f"Practice session {epoch}: {session['exercises']} exercises assigned. A restart begins session {epoch + 1}, in "
-                f"which every question of every source is eligible again ({pool}).{kept} The settings and every "
-                "exercise, outcome and mark are kept.\n"
-                "Dry run: nothing was changed. To restart: dailygrad leetcode practice restart-questions --confirm")  # fmt: skip
-    if not result["changed"]:
-        return f"{empty}. Nothing was changed."
-    return (f"Practice session {epoch} begun: every question is eligible again ({pool}).{kept} The settings and every "
-            "exercise, outcome and mark were kept; no exercise was chosen or skipped.")  # fmt: skip
+        return (f"Resetting {what} makes them eligible again in every mode: {result['freed_exercises']} earlier exercises of "
+                f"them would no longer count (every exercise, outcome and mark is kept, and the settings).{loop}{kept}\n"
+                f"Dry run: nothing was changed. To reset: dailygrad leetcode practice restart-questions {flags} --confirm")  # fmt: skip
+    return (f"Reset {what}: they are eligible again in every mode (practice period {result['epoch']}). "
+            f"{result['freed_exercises']} earlier exercises of them no longer count; every exercise, outcome and mark was "
+            f"kept, and the settings.{loop}{kept} No exercise was chosen or skipped.")  # fmt: skip
 
 
 def state_text(state: dict) -> str:

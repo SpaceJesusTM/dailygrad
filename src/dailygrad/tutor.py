@@ -314,52 +314,65 @@ def _boundary(state: practice.Snapshot, active: db.Assigned | None, current: int
     return after if after > current else None
 
 
-def restart_questions(config: Config, confirmed: bool, now: datetime | None = None) -> dict:
-    """Begin a fresh practice session, or with `confirmed` false say whether one would change anything.
+def restart_questions(config: Config, confirmed: bool, scope: practice.Scope, now: datetime | None = None) -> dict:
+    """Reset the questions of `scope`, or with `confirmed` false say what that would do.
 
-    Every question of every source becomes eligible again, in every mode: coverage starts from
-    its first question, loop mode shuffles a new cycle when it next chooses, and learning mode
-    counts no earlier completion or review. Only a marker is added (leetcode_practice_resets) and
-    the open loop cycle is ended: every exercise, outcome, mark and exchange stays, and so do the
-    settings. The exercise in progress, if any, stays the current one and is the new session's
-    first. Nothing is chosen, completed or skipped, no digest is written and no model is used.
+    The questions covered (every one, or those of some sources, each once) become eligible again
+    in every mode, as if never practised: coverage assigns them again, learning counts no earlier
+    completion or review of them, and loop mode gives them again (see practice.py for the open
+    cycle). Questions outside the scope are untouched. Only a reset row is added, and the open loop
+    cycle ended if the reset covers all of it: every exercise, outcome, mark and exchange stays,
+    and so do the settings. The exercise in progress, if any, stays the current one, and counts as
+    its question's first after the reset. Nothing is chosen, completed or skipped, no digest is
+    written and no model is used. Repeating a reset changes nothing until something is assigned.
     """
     now = now or datetime.now(timezone.utc)
     catalog = load_catalog()
     settings, problem = practice.settings_or_defaults(config)
+    _, _, latest, _, days, _, state = _read_state(config)
+    active = latest if latest and latest.outcome is None else None
+    plan = practice.plan_reset(catalog, state, scope, active)
     changed = False
     if confirmed and config.db_path.is_file():
         conn = db.connect(config.db_path)
         try:
             with conn:
                 conn.execute("BEGIN IMMEDIATE")  # a run or `next` recording at this moment finishes first
-                state = practice.snapshot(conn)
-                after = _boundary(state, db.active_leetcode(conn), state.start)
-                if after is not None:
-                    db.start_practice_session(conn, after, now)
-                    changed = True
+                plan = practice.reset_questions(conn, catalog, scope, db.active_leetcode(conn), now)
+                changed = bool(plan.freed)
         finally:
             conn.close()
-    _, _, latest, _, days, _, state = _read_state(config)
-    active = latest if latest and latest.outcome is None else None
+        _, _, latest, _, days, _, state = _read_state(config)
+        active = latest if latest and latest.outcome is None else None
     overview = practice.overview(catalog, settings, state, now.astimezone().date(), active)
+    problems = scope.problems(catalog)
     return {
         "ok": True,
         "action": "restart_questions",
         "dry_run": not confirmed,
         "changed": changed,
-        # Whether a restart would begin a new session now: false while the current one has nothing in it
-        # but the exercise in progress.
-        "would_change": _boundary(state, active, state.start) is not None,
-        "epoch": state.epoch,  # the practice session in force, from 1: the new one if `changed`
+        # Whether a reset of this scope would change anything now: false while none of its questions has an
+        # exercise that counts, but the one in progress.
+        "would_change": bool(practice.plan_reset(catalog, state, scope, active).freed),
+        "scope": {
+            "kind": scope.kind,  # "all", "sources" or "selected"
+            "sources": [{"id": source, "name": catalog.sources[source].name} for source in scope.sources],
+            "questions": plan.questions,  # covered, each once however many of its sources list it
+        },
+        "freed_exercises": plan.freed,  # earlier exercises of those questions that no longer count (all are kept)
+        # The open loop cycle: it ends if the reset covers all of it, else it carries on and gives the
+        # questions it had assigned and are reset again.
+        "loop_cycle": {"number": plan.cycle.number, "ends": plan.cycle_ends, "reopened": plan.reopened} if plan.cycle else None,
+        "epoch": state.epoch,  # the practice period in force, from 1: the new one if `changed`
         "session": overview["session"],
-        "catalog_problems": len(catalog.problems),  # every one of them is eligible again in a new session
-        "settings": settings.document(),  # never changed by a restart
+        "catalog_problems": len(catalog.problems),
+        "settings": settings.document(),  # never changed by a reset
         "sources": [{"id": source, "name": catalog.sources[source].name} for source in settings.sources],
         "pool": {"problems": len(catalog.pool(settings.sources)), "sources": list(settings.sources)},
         "active_exercise_id": active.id if active else None,
-        # The exercise in progress, which a restart never replaces: the new session's first.
+        # The exercise in progress, which a reset never replaces. In the scope, it counts as its question's first.
         "active": _identity_from(catalog, active, days) if active else None,
+        "active_in_scope": bool(active) and (problems is None or active.problem_id in problems),
         "upcoming": overview["upcoming"],
         "history_kept": True,
         "preferences_problem": problem,  # set if the settings file cannot be used; the config file's settings are shown
