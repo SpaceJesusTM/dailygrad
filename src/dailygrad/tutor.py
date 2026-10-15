@@ -299,10 +299,71 @@ def restart_coverage(config: Config, confirmed: bool, now: datetime | None = Non
 
 def restart_point(state: practice.Snapshot, active: db.Assigned | None) -> int | None:
     """The after_assignment_id of a new coverage pass begun now, or None if it would be the current one again."""
+    session = state.session()
+    current = session.passes[-1][1] if session.passes else session.start
+    return _boundary(state, active, current)
+
+
+def _boundary(state: practice.Snapshot, active: db.Assigned | None, current: int) -> int | None:
+    """Where something fresh begun now begins: after every exercise but the one in progress, which is its first.
+
+    None if that is where the one in force, beginning after `current`, began already.
+    """
     newest = state.history[-1].id if state.history else 0
     after = active.id - 1 if active else newest
-    current = state.passes[-1][1] if state.passes else 0
     return after if after > current else None
+
+
+def restart_questions(config: Config, confirmed: bool, now: datetime | None = None) -> dict:
+    """Begin a fresh practice session, or with `confirmed` false say whether one would change anything.
+
+    Every question of every source becomes eligible again, in every mode: coverage starts from
+    its first question, loop mode shuffles a new cycle when it next chooses, and learning mode
+    counts no earlier completion or review. Only a marker is added (leetcode_practice_resets) and
+    the open loop cycle is ended: every exercise, outcome, mark and exchange stays, and so do the
+    settings. The exercise in progress, if any, stays the current one and is the new session's
+    first. Nothing is chosen, completed or skipped, no digest is written and no model is used.
+    """
+    now = now or datetime.now(timezone.utc)
+    catalog = load_catalog()
+    settings, problem = practice.settings_or_defaults(config)
+    changed = False
+    if confirmed and config.db_path.is_file():
+        conn = db.connect(config.db_path)
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")  # a run or `next` recording at this moment finishes first
+                state = practice.snapshot(conn)
+                after = _boundary(state, db.active_leetcode(conn), state.start)
+                if after is not None:
+                    db.start_practice_session(conn, after, now)
+                    changed = True
+        finally:
+            conn.close()
+    _, _, latest, _, days, _, state = _read_state(config)
+    active = latest if latest and latest.outcome is None else None
+    overview = practice.overview(catalog, settings, state, now.astimezone().date(), active)
+    return {
+        "ok": True,
+        "action": "restart_questions",
+        "dry_run": not confirmed,
+        "changed": changed,
+        # Whether a restart would begin a new session now: false while the current one has nothing in it
+        # but the exercise in progress.
+        "would_change": _boundary(state, active, state.start) is not None,
+        "epoch": state.epoch,  # the practice session in force, from 1: the new one if `changed`
+        "session": overview["session"],
+        "catalog_problems": len(catalog.problems),  # every one of them is eligible again in a new session
+        "settings": settings.document(),  # never changed by a restart
+        "sources": [{"id": source, "name": catalog.sources[source].name} for source in settings.sources],
+        "pool": {"problems": len(catalog.pool(settings.sources)), "sources": list(settings.sources)},
+        "active_exercise_id": active.id if active else None,
+        # The exercise in progress, which a restart never replaces: the new session's first.
+        "active": _identity_from(catalog, active, days) if active else None,
+        "upcoming": overview["upcoming"],
+        "history_kept": True,
+        "preferences_problem": problem,  # set if the settings file cannot be used; the config file's settings are shown
+    }
 
 
 def _active_id(config: Config) -> int | None:

@@ -17,6 +17,14 @@ keeps every list it is on for reporting. The mode decides what comes next from t
               come first, the longest due first; then problems never completed. With neither,
               practice waits: "No reviews due. Next review: ...".
 
+The modes decide from the current practice session alone. `dailygrad leetcode practice
+restart-questions` begins a fresh one: every question of every source is eligible again in
+every mode, as if practice began anew (coverage from its first question, a freshly shuffled loop
+cycle, learning with no completion or review counted), while every earlier exercise, outcome and
+mark stays in the database for the record. The exercise in progress when a session begins is its
+first, so finishing it does not bring it straight back. Whether a problem was ever assigned
+before ("first" or "repeat") is still said of all history.
+
 Everything here is deterministic except the order of a new loop cycle, which is shuffled once
 and stored. Only the user's word moves practice on: an exercise ends when they complete or
 skip it (tutor.py), never because it was shown, a hint was asked for or time passed. A
@@ -265,15 +273,38 @@ def _write(path, stored: dict, now: datetime) -> None:
 
 @dataclass
 class Snapshot:
-    """What the modes decide from: every exercise with its outcome and schedule, the loop cycles and the coverage passes."""
+    """Every exercise with its outcome and schedule, the loop cycles, the coverage passes and the practice sessions."""
 
     history: list[db.Scheduled] = field(default_factory=list)
     cycles: list[db.Cycle] = field(default_factory=list)
     passes: list[tuple[str, int]] = field(default_factory=list)
+    resets: list[db.Reset] = field(default_factory=list)
+
+    @property
+    def start(self) -> int:
+        """The exercise ID the practice session in force begins after: 0 for the first session."""
+        return self.resets[-1].after_assignment_id if self.resets else 0
+
+    @property
+    def epoch(self) -> int:
+        """The number of the practice session in force, from 1."""
+        return len(self.resets) + 1
+
+    def session(self) -> "Snapshot":
+        """What the modes decide from: only the practice session in force, its exercises, cycles and passes."""
+        if not self.resets:
+            return self
+        reset = self.resets[-1]
+        return Snapshot(
+            [entry for entry in self.history if entry.id > reset.after_assignment_id],
+            [cycle for cycle in self.cycles if cycle.id > reset.after_cycle_id],
+            [started for started in self.passes if started[1] > reset.after_assignment_id],
+            self.resets,
+        )
 
 
 def snapshot(conn: sqlite3.Connection) -> Snapshot:
-    return Snapshot(db.scheduled_history(conn), db.cycles(conn), db.coverage_passes(conn))
+    return Snapshot(db.scheduled_history(conn), db.cycles(conn), db.coverage_passes(conn), db.practice_resets(conn))
 
 
 def local_day(stamp: str) -> date:
@@ -328,16 +359,17 @@ class Waiting:
 
 
 def choose(catalog: Catalog, current: Settings, state: Snapshot, today: date, skip: frozenset = frozenset()) -> Choice | Waiting | None:
-    """The next exercise under the settings, or why there is none. Reads only.
+    """The next exercise under the settings, or why there is none, from the whole snapshot. Reads only.
 
     None in loop mode means a new cycle has to begin first (start_cycle). `skip` holds problems
     to leave out, such as the one still in progress when status looks ahead.
     """
     pool = [problem for problem in catalog.pool(current.sources) if problem.id not in skip]
-    assigned = {entry.problem_id for entry in state.history}
+    assigned = {entry.problem_id for entry in state.history}  # in any session
     encounter = lambda problem: "repeat" if problem.id in assigned else "first"  # noqa: E731
+    state = state.session()
     if current.mode == "coverage":
-        after = state.passes[-1][1] if state.passes else 0
+        after = state.passes[-1][1] if state.passes else state.start
         encountered = {entry.problem_id for entry in state.history if entry.id > after}
         for problem in pool:
             if problem.id not in encountered:
@@ -368,12 +400,14 @@ def _open_cycle(catalog: Catalog, current: Settings, state: Snapshot) -> tuple[d
 def start_cycle(conn: sqlite3.Connection, catalog: Catalog, current: Settings, state: Snapshot, now: datetime) -> bool:
     """In loop mode, begin a new cycle if the next exercise needs one. Returns whether it did.
 
-    Call it inside a write transaction. An open cycle that is finished, or whose sources are
-    no longer the selected ones, is ended first; its exercises stay as they are. The new order
-    is shuffled once and stored, so a restart never reshuffles it. Where the pool allows, it
-    does not begin with the problem assigned last, so no problem is given twice in a row.
+    Call it inside a write transaction, with the whole snapshot. An open cycle that is finished,
+    or whose sources are no longer the selected ones, is ended first; its exercises stay as they
+    are. The new order is shuffled once and stored, so a restart never reshuffles it. Where the
+    pool allows, it does not begin with the problem assigned last, so no problem is given twice
+    in a row, even across a new practice session. Cycles are numbered from 1 in each session.
     """
-    cycle, remaining, _ = _open_cycle(catalog, current, state)
+    session = state.session()
+    cycle, remaining, _ = _open_cycle(catalog, current, session)
     if current.mode != "loop" or remaining:
         return False
     if cycle is not None:
@@ -385,7 +419,7 @@ def start_cycle(conn: sqlite3.Connection, catalog: Catalog, current: Settings, s
     if len(order) > 1 and order[0] == last:
         swap = shuffler.randrange(1, len(order))
         order[0], order[swap] = order[swap], order[0]
-    number = max((cycle.number for cycle in state.cycles), default=0) + 1
+    number = max((cycle.number for cycle in session.cycles), default=0) + 1
     db.start_cycle(conn, number, current.sources, order, now)
     log.info("LeetCode loop cycle %d begins: %d problems from %s", number, len(order), ", ".join(current.sources))
     return True
@@ -420,14 +454,16 @@ class _Record:
     skipped_id: int = 0
 
 
-def _records(state: Snapshot) -> dict[str, _Record]:
+def _records(session: Snapshot) -> dict[str, _Record]:
+    """What learning mode knows of each problem, from the practice session in force alone."""
     records = {}
-    for entry in state.history:
+    for entry in session.history:
         record = records.setdefault(entry.problem_id, _Record())
         if entry.outcome == "completed":
             record.completed_on.append(local_day(entry.closed_at))
             record.last_completed_id = entry.id
-            record.reviews += entry.encounter == "review"
+            # A review chosen in an earlier session and completed in this one is this session's first completion.
+            record.reviews += entry.encounter == "review" and len(record.completed_on) > 1
         elif entry.outcome == "skipped":
             record.skipped_on, record.skipped_id = local_day(entry.closed_at), entry.id
     return records
@@ -523,15 +559,21 @@ def status_document(catalog: Catalog, current: Settings, waiting: Waiting | None
     }
 
 
-def overview(catalog: Catalog, current: Settings, state: Snapshot, today: date, active: db.Assigned | None) -> dict:
-    """How far practice has come in each mode, and what the next exercise will be. Reads only."""
+def overview(catalog: Catalog, current: Settings, everything: Snapshot, today: date, active: db.Assigned | None) -> dict:
+    """How far practice has come in each mode in the session in force, and what the next exercise will be. Reads only."""
+    state = everything.session()
+    session = {
+        "epoch": state.epoch,  # 1 until the first `restart-questions`
+        "started_at": state.resets[-1].reset_at if state.resets else None,
+        "exercises": len(state.history),  # assigned in this session, the one in progress included
+    }
     pool = catalog.pool(current.sources)
     ids = {problem.id for problem in pool}
-    after = state.passes[-1][1] if state.passes else 0
+    after = state.passes[-1][1] if state.passes else state.start
     encountered = {entry.problem_id for entry in state.history if entry.id > after} & ids
     coverage = {
-        "pass": len(state.passes) + 1,
-        "pass_started_at": state.passes[-1][0] if state.passes else None,
+        "pass": len(state.passes) + 1,  # counted in the session
+        "pass_started_at": state.passes[-1][0] if state.passes else session["started_at"],
         "pool": len(pool),
         "encountered": len(encountered),
         "remaining": len(pool) - len(encountered),
@@ -583,7 +625,7 @@ def overview(catalog: Catalog, current: Settings, state: Snapshot, today: date, 
     }
 
     skip = frozenset({active.problem_id}) if active else frozenset()
-    following = choose(catalog, current, state, today, skip)
+    following = choose(catalog, current, everything, today, skip)
     if following is None:
         upcoming = {"state": "new_cycle", "message": "A new loop cycle, freshly shuffled, begins with the next exercise.",
                     "next_review_on": None}  # fmt: skip
@@ -591,4 +633,4 @@ def overview(catalog: Catalog, current: Settings, state: Snapshot, today: date, 
         upcoming = {"state": following.state, "message": following.message(catalog), "next_review_on": following.next_review_on}
     else:
         upcoming = {"state": "exercise", "message": None, "next_review_on": None}
-    return {"coverage": coverage, "loop": loop, "learning": learning, "upcoming": upcoming}
+    return {"session": session, "coverage": coverage, "loop": loop, "learning": learning, "upcoming": upcoming}

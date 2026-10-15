@@ -211,6 +211,8 @@ Every problem of the pool once, in the pool's order, for breadth.
   pass's first, so the pass does not offer it again. Without `--confirm` it only reports.
 - **History from before practice modes is the first pass.** Problems the earlier track
   rotation assigned are not offered again, and coverage carries on with the ones not seen.
+- Passes are counted within a practice session: after `restart-questions` (see
+  [Starting every question over](#starting-every-question-over)) coverage is in pass 1 again.
 
 ### Loop
 
@@ -230,7 +232,8 @@ Every problem of the pool once per cycle, again and again, for repetition.
   chosen, the unfinished cycle is ended (`sources_changed`) and a fresh cycle begins on the
   new pool. The old cycle's exercises stay in the history.
 - Switching to another mode and back resumes an unfinished cycle if the sources are the
-  same. Cycle numbers count on from the first cycle ever.
+  same. Cycle numbers count on from the first cycle of the practice session: from 1 at first,
+  and from 1 again after `restart-questions`, which ends the open cycle (`reset`).
 - Looping never ends by itself: it goes on until the mode or the sources are changed.
 
 ### Learning
@@ -242,8 +245,9 @@ Reviews of completed problems at a fixed interval, for retention.
 | `review_interval_days` | Days from a completion to the next review. 1 to 365. |
 | `max_reviews` | Reviews after the problem's first completion: 1 to 1000, or `"unlimited"`. |
 
-- A problem enters the schedule when it is **completed** for the first time, in any mode,
-  including before practice modes existed. Being shown, answered or skipped does not count.
+- A problem enters the schedule when it is **completed** for the first time in the practice
+  session, in any mode, including before practice modes existed. Being shown, answered or
+  skipped does not count.
 - Its next review falls due `review_interval_days` after its **latest completion**, as a
   calendar day. A review completed late moves the next one: with a 7-day interval, a problem
   completed on October 15 is due on October 22; if that review is completed on October 24,
@@ -267,6 +271,36 @@ Reviews of completed problems at a fixed interval, for retention.
 - The intervals are fixed. There is no adaptive spacing and no judgement of how well an
   answer went: the schedule depends only on completions, skips and the two settings.
 
+### Starting every question over
+
+`dailygrad leetcode practice restart-questions --confirm` begins a fresh **practice session**:
+every question of every source is eligible again, in every mode, as if practice began anew.
+It is not `practice reset`, which forgets settings and leaves progress alone.
+
+- **Every source**, not only the selected ones: switching to another source afterwards finds
+  it fresh too.
+- **Coverage** starts from the pool's first question, in pass 1.
+- **Loop** ends the open cycle (`reset`); the next exercise begins a new cycle, freshly
+  shuffled, of the whole pool, numbered 1. Where the pool allows, it does not begin with the
+  problem just finished.
+- **Learning** counts no earlier completion, review or skip: every question is new again, in
+  the pool's order, and a question's first completion in the new session sets its first
+  review, `review_interval_days` later, with all `max_reviews` still to come.
+- **The exercise in progress stays** the current exercise, untouched, and is the new
+  session's first: completing it counts in the new session, and neither completing nor
+  skipping it brings it straight back.
+- **Nothing else changes.** The sources, mode, interval and maximum reviews stay as they
+  are. Every exercise, outcome, showing, mark, exchange, pass and cycle stays in the
+  database: only a marker row is added (`leetcode_practice_resets`) and the open cycle is
+  ended. `status`'s `progress` still counts every session, so long-term statistics are whole.
+  No run is started, no digest written, no model used, and no exercise completed, skipped or
+  chosen.
+- Whether a problem was ever assigned before is still said of all history: an exercise
+  reintroduced in a new session has `review: true` and `encounter: "repeat"`.
+- Without `--confirm` it only reports what a restart would do. A restart when the session
+  holds nothing but the exercise in progress changes nothing, so asking twice begins one
+  session, not two.
+
 ### Calendar days
 
 Due dates are calendar days in the local time zone of the machine DailyGrad runs on: the
@@ -279,7 +313,7 @@ zone that dates the digest itself (on the production host, America/Toronto). A c
 |---|---|---|
 | `[leetcode]` in the config file | The defaults: `sources`, `mode`, `review_interval_days`, `max_reviews` | editing the file |
 | `<data_dir>/leetcode_practice.json` | What `practice set` chose; each setting there overrides the config file's | `dailygrad leetcode practice set` and `reset` |
-| the database | Passes, cycles, why each exercise was chosen | runs and `next`, `restart-coverage` |
+| the database | Sessions, passes, cycles, why each exercise was chosen | runs and `next`, `restart-coverage`, `restart-questions` |
 
 The settings file is runtime data, like the hint preference: Git ignores `data/`, and an
 update or a redeploy leaves it alone. It is replaced atomically, under a lock, so two changes
@@ -323,12 +357,13 @@ The change is additive and needs no manual migration:
    coverage pass, and the exercise in progress is listed under "Current exercise".
 4. Choose the practice, if not the default: for example
    `dailygrad leetcode practice set --sources amd --mode learning --interval 7 --max-reviews 3`.
-5. The next run, `next`, `mark complete` or `practice restart-coverage` opens the database
-   for writing; it then gains the three tables `leetcode_schedule`, `leetcode_cycles` and
-   `leetcode_coverage_passes`. No existing table or row changes, so a copy of the database
+5. The next run, `next`, `mark complete`, `practice restart-coverage` or
+   `practice restart-questions` opens the database for writing; it then gains the four tables
+   `leetcode_schedule`, `leetcode_cycles`, `leetcode_coverage_passes` and
+   `leetcode_practice_resets`. No existing table or row changes, so a copy of the database
    taken before the upgrade is still valid, and an older DailyGrad can still open the
    upgraded database (it ignores the new tables and the settings file; it would choose by the
-   old rotation again). To roll back, first remove `sources`, `mode`, `review_interval_days`
+   old rotation again, counting every session's exercises as one history). To roll back, first remove `sources`, `mode`, `review_interval_days`
    and `max_reviews` from the config file if you added them there: an older version refuses
    settings it does not know. Settings made with `practice set` need no such step.
 
@@ -470,9 +505,12 @@ writing; opening it again changes nothing.
   it was a first encounter, a repeat or a learning review (with its number and due day), and
   its loop cycle. Exercises from before practice modes have none.
 - `leetcode_cycles`: one row per loop cycle, with its sources, its shuffled order, and how
-  it ended (`completed` or `sources_changed`); the open cycle has no end.
+  it ended (`completed`, `sources_changed` or `reset`); the open cycle has no end.
 - `leetcode_coverage_passes`: one row per fresh coverage pass started on request. Without
   one, every exercise is in the first pass.
+- `leetcode_practice_resets`: one row per fresh practice session (`restart-questions`), with
+  the last exercise and cycle of the sessions before it. The newest is the session in force;
+  without one, everything is in the first. The modes decide from the session in force alone.
 
 Coverage, loop progress and the learning schedule are all derived from these tables and the
 outcomes: nothing is counted twice, and nothing is deleted to make a problem available again.
@@ -502,6 +540,7 @@ no outcome: they were neither completed nor skipped, and are not counted as eith
 | `leetcode practice set` | Changes any of `--sources ID...`, `--mode MODE`, `--interval DAYS`, `--max-reviews N\|unlimited`, at once or not at all. | No |
 | `leetcode practice reset` | Forgets the settings `practice set` stored: the config file's apply again. | No |
 | `leetcode practice restart-coverage` | Says what a fresh coverage pass would do; with `--confirm`, begins one. | No |
+| `leetcode practice restart-questions` | Says what a fresh practice session would do; with `--confirm`, begins one: every question of every source eligible again, settings and history kept. | No |
 
 Every command accepts `--json` and `--config PATH`. `hint`, `answer`, `review` and `mark`
 are about the newest exercise assigned, or with `--problem ID` about the newest exercise of
@@ -885,8 +924,11 @@ any time, including during a run.
 - `available_sources` lists every source the catalog has, with its problem count, so a
   caller never needs to know the IDs or counts in advance. `pool.problems` counts the
   selected sources' problems once each.
+- `session` is the practice session in force: its `epoch` (1 until the first
+  `restart-questions`), when it `started_at` (`null` for the first), and how many
+  `exercises` it has assigned, the one in progress included.
 - `coverage`, `loop` and `learning` describe progress in every mode, whichever is in force,
-  so "how far through my loop am I?" can be answered at any time.
+  within the session, so "how far through my loop am I?" can be answered at any time.
   - `coverage`: the pass number, how many of the pool's problems it has assigned, overall
     and per selected source (a problem two lists hold counts for both), and `complete`.
   - `loop.cycle`: the open cycle, or `null` before the first: its `number`, `size`, how many
@@ -982,6 +1024,45 @@ dailygrad leetcode practice restart-coverage --confirm --json  # do it
   added: every exercise, outcome, mark, cycle and setting stays. A restart affects coverage
   alone; loop and learning do not use passes.
 
+### `practice restart-questions --json`
+
+```sh
+dailygrad leetcode practice restart-questions --json            # what a restart would do
+dailygrad leetcode practice restart-questions --confirm --json  # do it
+```
+
+```json
+{
+  "ok": true,
+  "action": "restart_questions",
+  "dry_run": false,
+  "changed": true,
+  "would_change": false,
+  "epoch": 2,
+  "session": {"epoch": 2, "started_at": "2026-11-02T13:00:00+00:00", "exercises": 1},
+  "catalog_problems": 182,
+  "settings": {"sources": ["amd"], "mode": "loop", "review_interval_days": 7, "max_reviews": 3},
+  "sources": [{"id": "amd", "name": "AMD"}],
+  "pool": {"problems": 17, "sources": ["amd"]},
+  "active_exercise_id": 4,
+  "active": {"exercise_id": 4, "problem_id": "3sum", "number": 15, "title": "3Sum", "url": "https://leetcode.com/problems/3sum/",
+             "track": "amd", "review": false, "assigned_on": "2026-10-13", "days_shown": 1, "outcome": null, "closed_at": null},
+  "upcoming": {"state": "new_cycle", "message": "A new loop cycle, freshly shuffled, begins with the next exercise.", "next_review_on": null},
+  "history_kept": true,
+  "preferences_problem": null
+}
+```
+
+- Without `--confirm` nothing is opened for writing: `dry_run` is `true`, `changed` is
+  `false`, `epoch` and `session` are the session in force, and `would_change` says whether a
+  restart would begin a new one (it would not while the session holds nothing but the
+  exercise in progress).
+- With `--confirm`, `epoch` and `session` are the new session. `catalog_problems` counts
+  every question of every source, all eligible again; `pool` is the selected sources' share,
+  which the next exercise is chosen from. `settings` are unchanged, and `active` is the
+  exercise in progress, which stays current and is the session's first. `upcoming` is what
+  comes after it.
+
 ## The model's memory
 
 A run loads the model, uses it for the news, the lesson and the hint, and unloads it when it
@@ -1014,6 +1095,7 @@ of that logic, only these calls:
 | Read the sources, mode and progress | `dailygrad leetcode practice --json` | none |
 | Change the sources or mode | `dailygrad leetcode practice set --mode M --interval N --max-reviews N --sources ID... --json` (any of them) | none |
 | Begin a fresh coverage pass | `dailygrad leetcode practice restart-coverage --confirm --json` | none |
+| Make every question eligible again | `dailygrad leetcode practice restart-questions --confirm --json` | none |
 
 Rules that keep this safe:
 
@@ -1023,6 +1105,8 @@ Rules that keep this safe:
   `--exercise` a number of 1 to 9 digits, and `STATE` is one of six words; `--sources` takes
   source IDs of the same form (or `all`), `--mode` one of three words, `--interval` and
   `--max-reviews` whole numbers (or `unlimited`). DailyGrad refuses anything else.
+- **Restart coverage or every question only when the person explicitly asks** to start
+  their question progress over. It keeps all history, but it does change what comes next.
 - **Change the practice settings only on the person's word**, and never in order to end or
   replace the exercise in progress: a change applies to the next exercise chosen. Report
   `settings` from the reply, not what was asked for.

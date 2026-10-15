@@ -168,11 +168,11 @@ CREATE TABLE IF NOT EXISTS leetcode_schedule (
 -- one without `ended`; a cycle's progress is its exercises in leetcode_schedule.
 CREATE TABLE IF NOT EXISTS leetcode_cycles (
     id INTEGER PRIMARY KEY,
-    number INTEGER NOT NULL,  -- 1 for the first cycle ever, counting on across source changes
+    number INTEGER NOT NULL,  -- 1 for the first cycle of a practice session, counting on across source changes
     sources TEXT NOT NULL,  -- the source IDs whose problems it holds, as a JSON list
     problems TEXT NOT NULL,  -- the problem IDs in the order they are assigned, as a JSON list
     started_at TEXT NOT NULL,
-    ended TEXT,  -- 'completed', or 'sources_changed' if the selection changed before it was
+    ended TEXT,  -- 'completed'; 'sources_changed' if the selection changed before it was; 'reset' by a new session
     ended_at TEXT
 );
 
@@ -183,6 +183,19 @@ CREATE TABLE IF NOT EXISTS leetcode_coverage_passes (
     id INTEGER PRIMARY KEY,
     started_at TEXT NOT NULL,
     after_assignment_id INTEGER NOT NULL
+);
+
+-- A fresh practice session, asked for by the user (`dailygrad leetcode practice restart-questions`):
+-- every question of every source is eligible again, in every mode, as if practice began anew.
+-- Exercises up to and including after_assignment_id, and loop cycles up to and including
+-- after_cycle_id, belong to earlier sessions; the newest row is the session in force, and with
+-- none everything is in the first. Nothing else is changed: earlier exercises, outcomes, marks
+-- and exchanges stay, for the record and for statistics.
+CREATE TABLE IF NOT EXISTS leetcode_practice_resets (
+    id INTEGER PRIMARY KEY,
+    reset_at TEXT NOT NULL,
+    after_assignment_id INTEGER NOT NULL,
+    after_cycle_id INTEGER NOT NULL
 );
 """
 
@@ -720,6 +733,35 @@ def start_coverage_pass(conn: sqlite3.Connection, after_assignment_id: int, now:
     conn.execute(
         "INSERT INTO leetcode_coverage_passes (started_at, after_assignment_id) VALUES (?, ?)",
         (now.isoformat(), after_assignment_id),
+    )
+
+
+class Reset(NamedTuple):
+    """A fresh practice session: what came before it belongs to earlier sessions."""
+
+    id: int
+    reset_at: str
+    after_assignment_id: int
+    after_cycle_id: int
+
+
+def practice_resets(conn: sqlite3.Connection) -> list[Reset]:
+    """Every fresh practice session begun, oldest first."""
+    if not _has_table(conn, "leetcode_practice_resets"):
+        return []
+    rows = conn.execute("SELECT id, reset_at, after_assignment_id, after_cycle_id FROM leetcode_practice_resets ORDER BY id")
+    return [Reset._make(row) for row in rows]
+
+
+def start_practice_session(conn: sqlite3.Connection, after_assignment_id: int, now: datetime) -> None:
+    """Begin a fresh practice session: add its marker, and end the open loop cycle, which belongs to the old one."""
+    (after_cycle_id,) = conn.execute("SELECT COALESCE(MAX(id), 0) FROM leetcode_cycles").fetchone()
+    conn.execute(
+        "UPDATE leetcode_cycles SET ended = 'reset', ended_at = ? WHERE ended IS NULL", (now.isoformat(),)
+    )
+    conn.execute(
+        "INSERT INTO leetcode_practice_resets (reset_at, after_assignment_id, after_cycle_id) VALUES (?, ?, ?)",
+        (now.isoformat(), after_assignment_id, after_cycle_id),
     )
 
 
